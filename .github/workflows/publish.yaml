@@ -2,11 +2,6 @@ name: Reusable NPM publish
 
 on:
   workflow_call:
-    inputs:
-      node-version:
-        required: false
-        type: string
-        default: '22'
 
 permissions:
   id-token: write  # Required for OIDC
@@ -20,7 +15,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ inputs.node-version }}
+          node-version-file: '.nvmrc'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Update npm
