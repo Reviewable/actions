@@ -44,11 +44,11 @@ jobs:
 
       - run: ${{ steps.detect-pm.outputs.pm }} install
         working-directory: ${{ inputs.directory }}
-      - run: jq -e '.scripts.build // empty' package.json >/dev/null && ${{ steps.detect-pm.outputs.pm }} run build
+      - run: if jq -e '.scripts.build // empty' package.json >/dev/null; then ${{ steps.detect-pm.outputs.pm }} run build; fi
         working-directory: ${{ inputs.directory }}
-      - run: jq -e '.scripts.lint // empty' package.json  >/dev/null && ${{ steps.detect-pm.outputs.pm }} run lint
+      - run: if jq -e '.scripts.lint  // empty' package.json >/dev/null; then ${{ steps.detect-pm.outputs.pm }} run lint; fi
         working-directory: ${{ inputs.directory }}
-      - run: jq -e '.scripts.test // empty' package.json  >/dev/null && ${{ steps.detect-pm.outputs.pm }} run test
+      - run: if jq -e '.scripts.test  // empty' package.json >/dev/null; then ${{ steps.detect-pm.outputs.pm }} run test; fi
         working-directory: ${{ inputs.directory }}
       - run: npm publish
         working-directory: ${{ inputs.directory }}
