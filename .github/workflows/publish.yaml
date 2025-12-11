@@ -56,67 +56,69 @@ jobs:
         working-directory: ${{ inputs.directory }}
         run: |
           set -euo pipefail
-
+      
           decision=$(node << 'EOF'
           const { execSync } = require('node:child_process');
           const fs = require('node:fs');
-
+      
           function sh(cmd) {
-            return execSync(cmd, {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']}).trim();
+            return execSync(cmd, {
+              encoding: 'utf8',
+              stdio: ['ignore', 'pipe', 'pipe'],
+            }).trim();
           }
-
+      
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
           const name = pkg.name;
           const version = pkg.version;
-
+      
           let published;
+      
           try {
-            const json = sh(\`npm view \${name}@\${version} --json\`);
+            const json = sh('npm view ' + name + '@' + version + ' --json');
             published = JSON.parse(json);
           } catch (e) {
             const stderr = String(e.stderr || '');
-            // 404: version does not exist yet → publish
             if (stderr.includes('E404') || stderr.includes('404 Not Found')) {
-              console.error(\`[decide] \${name}@\${version} not found in registry; will publish.\`);
+              console.error('[decide] ' + name + '@' + version + ' not found; will publish.');
               console.log('publish');
               process.exit(0);
             }
             console.error('[decide] npm view failed unexpectedly:', stderr || e);
             process.exit(1);
           }
-
+      
           const integrity = published.dist && published.dist.integrity;
           if (!integrity) {
-            console.error(\`[decide] \${name}@\${version} exists but has no dist.integrity; refusing.\`);
+            console.error('[decide] existing version lacks dist.integrity; refusing.');
             process.exit(1);
           }
-
-          // Build local tarball
-          console.error('[decide] Building local tarball with npm pack…');
+      
+          console.error('[decide] building tarball…');
           sh('npm pack --silent');
-
+      
           const file = fs.readdirSync('.').find(f => f.endsWith('.tgz'));
           if (!file) {
-            console.error('[decide] No .tgz file produced by npm pack.');
+            console.error('[decide] npm pack produced no .tgz file.');
             process.exit(1);
           }
-
-          console.error(\`[decide] Computing integrity for \${file}…\`);
-          const localIntegrity = sh(\`npx --yes ssri generate "\${file}"\`);
-
+      
+          console.error('[decide] computing local integrity…');
+          const localIntegrity = sh('npx --yes ssri generate "' + file + '"');
+      
           if (localIntegrity === integrity) {
-            console.error(\`[decide] Identical tarball already published for \${name}@\${version}; skipping.\`);
+            console.error('[decide] identical tarball already published; skipping.');
             console.log('skip');
             process.exit(0);
           }
-
-          console.error(\`[decide] \${name}@\${version} already exists but tarball differs; refusing.\`);
+      
+          console.error('[decide] version exists but tarballs differ; refusing.');
           process.exit(1);
           EOF
           )
-
+      
           echo "decision=${decision}" >> "$GITHUB_OUTPUT"
-
+          
       - run: npm publish
         if: steps.decide.outputs.decision == 'publish'
         working-directory: ${{ inputs.directory }}
