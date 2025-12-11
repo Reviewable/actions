@@ -11,11 +11,16 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
+      - id: resolve
+        run: |
+          v=$(curl -s https://nodejs.org/dist/index.json | jq -r '[.[] | select(.lts != false)][0].version')
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version-file: '.nvmrc'
+          node-version: ${{ steps.resolve.outputs.version }}
           registry-url: 'https://registry.npmjs.org'
 
       - name: Update npm
