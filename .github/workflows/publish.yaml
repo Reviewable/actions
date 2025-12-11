@@ -2,6 +2,10 @@ name: Reusable NPM publish
 
 on:
   workflow_call:
+    inputs:
+      directory:
+        type: string
+        default: .
 
 permissions:
   id-token: write  # Required for OIDC
@@ -11,7 +15,18 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - id: resolve
+      - name: Detect package manager
+        id: detect-pm
+        working-directory: ${{ inputs.directory }}
+        run: |
+          if [ -f yarn.lock ]; then
+            echo "pm=yarn" >> "$GITHUB_OUTPUT"
+          else
+            echo "pm=npm" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve Node LTS version
+        id: resolve
         run: |
           v=$(curl -s https://nodejs.org/dist/index.json | jq -r '[.[] | select(.lts != false)][0].version')
           echo "version=$v" >> "$GITHUB_OUTPUT"
@@ -22,12 +37,18 @@ jobs:
         with:
           node-version: ${{ steps.resolve.outputs.version }}
           registry-url: 'https://registry.npmjs.org'
+          cache: ${{ steps.detect-pm.outputs.pm }}
 
       - name: Update npm
         run: npm install -g npm@latest
 
-      - run: npm install
-      - run: npm run lint --if-present
-      - run: npm run build --if-present
-      - run: npm run test --if-present
+      - run: ${{ steps.detect-pm.outputs.pm }} install
+        working-directory: ${{ inputs.directory }}
+      - run: jq -e '.scripts.build // empty' package.json >/dev/null && ${{ steps.detect-pm.outputs.pm }} run build
+        working-directory: ${{ inputs.directory }}
+      - run: jq -e '.scripts.lint // empty' package.json  >/dev/null && ${{ steps.detect-pm.outputs.pm }} run lint
+        working-directory: ${{ inputs.directory }}
+      - run: jq -e '.scripts.test // empty' package.json  >/dev/null && ${{ steps.detect-pm.outputs.pm }} run test
+        working-directory: ${{ inputs.directory }}
       - run: npm publish
+        working-directory: ${{ inputs.directory }}
