@@ -50,6 +50,8 @@ jobs:
         working-directory: ${{ inputs.directory }}
       - run: if jq -e '.scripts.test  // empty' package.json >/dev/null; then ${{ steps.detect-pm.outputs.pm }} run test; fi
         working-directory: ${{ inputs.directory }}
+      - run: if jq -e '.scripts.finalize // empty' package.json >/dev/null; then ${{ steps.detect-pm.outputs.pm }} run finalize; fi
+        working-directory: ${{ inputs.directory }}
 
       - name: Verify tarball matches published version (if any)
         id: decide
