@@ -60,12 +60,20 @@ jobs:
           decision=$(node << 'EOF'
           const { execSync } = require('node:child_process');
           const fs = require('node:fs');
+          const crypto = require('node:crypto');
       
           function sh(cmd) {
             return execSync(cmd, {
               encoding: 'utf8',
               stdio: ['ignore', 'pipe', 'pipe'],
             }).trim();
+          }
+      
+          function pickSha512(integrity) {
+            if (!integrity) return null;
+            const parts = String(integrity).split(' ');
+            const sha512Part = parts.find(p => p.startsWith('sha512-'));
+            return sha512Part || parts[0] || null;
           }
       
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
@@ -88,9 +96,10 @@ jobs:
             process.exit(1);
           }
       
-          const integrity = published.dist && published.dist.integrity;
-          if (!integrity) {
-            console.error('[decide] existing version lacks dist.integrity; refusing.');
+          const publishedIntegrityRaw = published.dist && published.dist.integrity;
+          const publishedIntegrity = pickSha512(publishedIntegrityRaw);
+          if (!publishedIntegrity) {
+            console.error('[decide] existing version lacks usable dist.integrity; refusing.');
             process.exit(1);
           }
       
@@ -104,9 +113,11 @@ jobs:
           }
       
           console.error('[decide] computing local integrity…');
-          const localIntegrity = sh('npx --yes ssri generate "' + file + '"');
+          const data = fs.readFileSync(file);
+          const hash = crypto.createHash('sha512').update(data).digest('base64');
+          const localIntegrity = 'sha512-' + hash;
       
-          if (localIntegrity === integrity) {
+          if (localIntegrity === publishedIntegrity) {
             console.error('[decide] identical tarball already published; skipping.');
             console.log('skip');
             process.exit(0);
@@ -116,7 +127,7 @@ jobs:
           process.exit(1);
           EOF
           )
-      
+
           echo "decision=${decision}" >> "$GITHUB_OUTPUT"
           
       - run: npm publish
