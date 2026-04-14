@@ -1,0 +1,86 @@
+name: Release action
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        type: string
+        default: "24"
+      directory:
+        type: string
+        default: "."
+      checkout_submodules:
+        type: boolean
+        default: false
+      install_command:
+        type: string
+        required: true
+      build_command:
+        type: string
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  tag-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ github.token }}
+          fetch-depth: 0
+          submodules: ${{ inputs.checkout_submodules }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Install dependencies
+        shell: bash
+        working-directory: ${{ inputs.directory }}
+        run: ${{ inputs.install_command }}
+
+      - name: Build
+        shell: bash
+        working-directory: ${{ inputs.directory }}
+        run: ${{ inputs.build_command }}
+
+      - name: Check for build changes
+        shell: bash
+        run: git diff --quiet
+
+      - name: Read version
+        id: version
+        shell: bash
+        working-directory: ${{ inputs.directory }}
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          major=${version%%.*}
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "major=$major" >> "$GITHUB_OUTPUT"
+
+      - name: Create release tags
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          MAJOR: ${{ steps.version.outputs.major }}
+        run: |
+          set -euo pipefail
+
+          git fetch --tags origin
+
+          if git rev-parse "refs/tags/v${VERSION}" >/dev/null 2>&1; then
+            echo "Tag v${VERSION} already exists" >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git tag -fa "v${MAJOR}" -m "Release v${VERSION}"
+
+          git push origin "refs/tags/v${VERSION}"
+          git push origin --force "refs/tags/v${MAJOR}"
