@@ -41,6 +41,11 @@ jobs:
 
       - name: Update npm
         run: npm install -g npm@latest
+        
+      - name: Init Corepack
+        run: |
+          corepack enable
+          corepack install
 
       - run: ${{ steps.detect-pm.outputs.pm }} install
         working-directory: ${{ inputs.directory }}
