@@ -8,135 +8,236 @@ on:
         default: .
 
 permissions:
-  id-token: write  # Required for OIDC
+  id-token: write # Required for OIDC
   contents: read
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 'lts/*'
+          check-latest: true
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
 
       - name: Detect package manager
         id: detect-pm
         working-directory: ${{ inputs.directory }}
+        env:
+          INPUT_DIRECTORY: ${{ inputs.directory }}
         run: |
-          if [ -f yarn.lock ]; then
-            echo "pm=yarn" >> "$GITHUB_OUTPUT"
-          else
-            echo "pm=npm" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+
+          node <<'EOF'
+          const fs = require('node:fs');
+
+          if (!fs.existsSync('package.json')) {
+            throw new Error(`No package.json found in ${process.cwd()}`);
+          }
+
+          const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+
+          function normalizePackageManager(value) {
+            if (typeof value !== 'string') return '';
+            const match = value.replace(/^\^/, '').match(/^(npm|yarn|pnpm)(?:@|$)/);
+            return match ? match[1] : '';
+          }
+
+          function packageManagerFromPackageJson() {
+            if (typeof pkg.packageManager === 'string') {
+              const pm = normalizePackageManager(pkg.packageManager);
+              if (!pm) {
+                throw new Error(`Unsupported packageManager "${pkg.packageManager}". Supported package managers: npm, yarn, pnpm.`);
+              }
+              return { pm, hasPackageManagerField: true };
+            }
+
+            const devPm = pkg.devEngines && pkg.devEngines.packageManager;
+            const entries = Array.isArray(devPm) ? devPm : devPm ? [devPm] : [];
+            for (const entry of entries) {
+              if (entry && typeof entry.name === 'string') {
+                const pm = normalizePackageManager(entry.name);
+                if (pm) return { pm, hasPackageManagerField: true };
+              }
+            }
+
+            if (entries.length) {
+              throw new Error('Unsupported devEngines.packageManager. Supported package managers: npm, yarn, pnpm.');
+            }
+
+            return { pm: '', hasPackageManagerField: false };
+          }
+
+          const fromPackageJson = packageManagerFromPackageJson();
+          let pm = fromPackageJson.pm;
+
+          if (!pm) {
+            if (fs.existsSync('pnpm-lock.yaml')) pm = 'pnpm';
+            else if (fs.existsSync('yarn.lock')) pm = 'yarn';
+            else pm = 'npm';
+          }
+
+          const lockfiles = {
+            npm: ['package-lock.json', 'npm-shrinkwrap.json'],
+            yarn: ['yarn.lock'],
+            pnpm: ['pnpm-lock.yaml'],
+          };
+
+          const lockfileName = lockfiles[pm].find(file => fs.existsSync(file)) || '';
+          const inputDirectory = (process.env.INPUT_DIRECTORY || '.')
+            .replace(/\\/g, '/')
+            .replace(/\/+$/, '') || '.';
+
+          const lockfilePath = lockfileName
+            ? inputDirectory === '.' ? lockfileName : `${inputDirectory}/${lockfileName}`
+            : '';
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `pm=${pm}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `cache=${lockfilePath ? pm : ''}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `cache_dependency_path=${lockfilePath}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `has_package_manager_field=${fromPackageJson.hasPackageManagerField ? 'true' : 'false'}\n`);
+          EOF
+
+      - name: Update npm and enable Corepack
+        working-directory: ${{ inputs.directory }}
+        env:
+          HAS_PACKAGE_MANAGER_FIELD: ${{ steps.detect-pm.outputs.has_package_manager_field }}
+        run: |
+          set -euo pipefail
+
+          npm install -g npm@latest corepack@latest
+          corepack enable
+
+          if [ "$HAS_PACKAGE_MANAGER_FIELD" = "true" ]; then
+            corepack install
           fi
 
-      - name: Resolve Node LTS version
-        id: resolve
-        run: |
-          v=$(curl -s https://nodejs.org/dist/index.json | jq -r '[.[] | select(.lts != false)][0].version')
-          echo "version=$v" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
+        if: ${{ steps.detect-pm.outputs.cache != '' }}
+        env:
+          COREPACK_ENABLE_STRICT: 0
         with:
-          node-version: ${{ steps.resolve.outputs.version }}
+          node-version: 'lts/*'
+          check-latest: true
           registry-url: 'https://registry.npmjs.org'
-          cache: ${{ steps.detect-pm.outputs.pm }}
+          cache: ${{ steps.detect-pm.outputs.cache }}
+          cache-dependency-path: ${{ steps.detect-pm.outputs.cache_dependency_path }}
+          package-manager-cache: false
 
-      - name: Update npm
-        run: npm install -g npm@latest
-        
-      - name: Init Corepack
+      - name: Install and verify
+        working-directory: ${{ inputs.directory }}
+        env:
+          PM: ${{ steps.detect-pm.outputs.pm }}
+          HAS_PACKAGE_MANAGER_FIELD: ${{ steps.detect-pm.outputs.has_package_manager_field }}
         run: |
-          corepack enable
-          corepack install
+          set -euo pipefail
 
-      - run: ${{ steps.detect-pm.outputs.pm }} install
-        working-directory: ${{ inputs.directory }}
-      - run: if jq -e '.scripts.build // empty' package.json >/dev/null; then ${{ steps.detect-pm.outputs.pm }} run build; fi
-        working-directory: ${{ inputs.directory }}
-      - run: if jq -e '.scripts.lint  // empty' package.json >/dev/null; then ${{ steps.detect-pm.outputs.pm }} run lint; fi
-        working-directory: ${{ inputs.directory }}
-      - run: if jq -e '.scripts.test  // empty' package.json >/dev/null; then ${{ steps.detect-pm.outputs.pm }} run test; fi
-        working-directory: ${{ inputs.directory }}
-      - run: if jq -e '.scripts.finalize // empty' package.json >/dev/null; then ${{ steps.detect-pm.outputs.pm }} run finalize; fi
-        working-directory: ${{ inputs.directory }}
+          run_pm() {
+            if [ "$HAS_PACKAGE_MANAGER_FIELD" = "true" ]; then
+              corepack "$PM" "$@"
+            else
+              "$PM" "$@"
+            fi
+          }
+
+          run_pm install
+
+          for script in build lint test finalize; do
+            if jq -e --arg script "$script" '.scripts[$script] // empty' package.json >/dev/null; then
+              run_pm run "$script"
+            fi
+          done
 
       - name: Verify tarball matches published version (if any)
         id: decide
         working-directory: ${{ inputs.directory }}
         run: |
           set -euo pipefail
-      
+
           decision=$(node << 'EOF'
-          const { execSync } = require('node:child_process');
+          const { execFileSync } = require('node:child_process');
           const fs = require('node:fs');
+          const os = require('node:os');
+          const path = require('node:path');
           const crypto = require('node:crypto');
-      
-          function sh(cmd) {
-            return execSync(cmd, {
+
+          function npm(args) {
+            return execFileSync('npm', args, {
               encoding: 'utf8',
               stdio: ['ignore', 'pipe', 'pipe'],
             }).trim();
           }
-      
+
           function pickSha512(integrity) {
             if (!integrity) return null;
             const parts = String(integrity).split(' ');
-            const sha512Part = parts.find(p => p.startsWith('sha512-'));
-            return sha512Part || parts[0] || null;
+            return parts.find(p => p.startsWith('sha512-')) || parts[0] || null;
           }
-      
+
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
           const name = pkg.name;
           const version = pkg.version;
-      
+
           let published;
-      
+
           try {
-            const json = sh('npm view ' + name + '@' + version + ' --json');
+            const json = npm(['view', `${name}@${version}`, '--json']);
             published = JSON.parse(json);
           } catch (e) {
             const stderr = String(e.stderr || '');
             if (stderr.includes('E404') || stderr.includes('404 Not Found')) {
-              console.error('[decide] ' + name + '@' + version + ' not found; will publish.');
+              console.error(`[decide] ${name}@${version} not found; will publish.`);
               console.log('publish');
               process.exit(0);
             }
             console.error('[decide] npm view failed unexpectedly:', stderr || e);
             process.exit(1);
           }
-      
-          const publishedIntegrityRaw = published.dist && published.dist.integrity;
-          const publishedIntegrity = pickSha512(publishedIntegrityRaw);
+
+          const publishedIntegrity = pickSha512(published.dist && published.dist.integrity);
           if (!publishedIntegrity) {
             console.error('[decide] existing version lacks usable dist.integrity; refusing.');
             process.exit(1);
           }
-      
-          console.error('[decide] building tarball…');
-          sh('npm pack --silent');
-      
-          const file = fs.readdirSync('.').find(f => f.endsWith('.tgz'));
-          if (!file) {
-            console.error('[decide] npm pack produced no .tgz file.');
+
+          const packDir = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-pack-'));
+
+          try {
+            console.error('[decide] building tarball...');
+            const packed = npm(['pack', '--silent', '--pack-destination', packDir])
+              .split(/\r?\n/)
+              .filter(Boolean)
+              .pop();
+
+            if (!packed) {
+              console.error('[decide] npm pack produced no .tgz file.');
+              process.exit(1);
+            }
+
+            console.error('[decide] computing local integrity...');
+            const data = fs.readFileSync(path.join(packDir, packed));
+            const localIntegrity = 'sha512-' + crypto.createHash('sha512').update(data).digest('base64');
+
+            if (localIntegrity === publishedIntegrity) {
+              console.error('[decide] identical tarball already published; skipping.');
+              console.log('skip');
+              process.exit(0);
+            }
+
+            console.error('[decide] version exists but tarballs differ; refusing.');
             process.exit(1);
+          } finally {
+            fs.rmSync(packDir, { recursive: true, force: true });
           }
-      
-          console.error('[decide] computing local integrity…');
-          const data = fs.readFileSync(file);
-          const hash = crypto.createHash('sha512').update(data).digest('base64');
-          const localIntegrity = 'sha512-' + hash;
-      
-          if (localIntegrity === publishedIntegrity) {
-            console.error('[decide] identical tarball already published; skipping.');
-            console.log('skip');
-            process.exit(0);
-          }
-      
-          console.error('[decide] version exists but tarballs differ; refusing.');
-          process.exit(1);
           EOF
           )
 
           echo "decision=${decision}" >> "$GITHUB_OUTPUT"
-          
+
       - run: npm publish
         if: steps.decide.outputs.decision == 'publish'
         working-directory: ${{ inputs.directory }}
