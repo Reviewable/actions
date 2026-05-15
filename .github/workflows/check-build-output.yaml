@@ -1,0 +1,43 @@
+name: Check build output
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Install Yarn
+        run: |
+          corepack enable
+          corepack install
+
+      - name: Get Yarn cache directory
+        id: yarn-cache-dir
+        run: echo "dir=$(yarn config get cacheFolder)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Yarn cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ steps.yarn-cache-dir.outputs.dir }}
+          key: ${{ runner.os }}-yarn-${{ hashFiles('yarn.lock', '.yarnrc.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-yarn-
+
+      - name: Install packages
+        run: yarn install --immutable
+
+      - name: Build
+        run: yarn build
+
+      - name: Check for build changes
+        run: test -z "$(git status --porcelain --untracked-files=all -- dist)"
