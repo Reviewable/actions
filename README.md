@@ -38,5 +38,7 @@ dispatch again after resolving the issue. Security updates can qualify under the
 same rules. A successful dispatch merges immediately rather than enabling GitHub's
 deferred auto-merge setting.
 
-Run validator tests with `npm ci --ignore-scripts` and `npm test` from
-`auto-safe-merge/`.
+From `auto-safe-merge/`, run `npm ci --ignore-scripts`, `npm run lint`, and `npm test`.
+ESLint uses the shared `reviewable-configs` baseline for the validator, tests, and
+lint configuration, with Node/CommonJS settings for JavaScript files. CI runs both
+lint and tests; the merge workflow installs only runtime dependencies.

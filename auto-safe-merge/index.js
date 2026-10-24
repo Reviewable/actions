@@ -1,3 +1,5 @@
+'use strict';
+
 const path = require('node:path').posix;
 const {LOCKFILES, insist, checkLockfile} = require('./lockfiles');
 
@@ -15,7 +17,8 @@ function checkPr(pr, params) {
   insist(pr.state === 'open' && !pr.merged && !pr.draft, 'PR must be open and ready for review');
   insist(pr.base.repo.full_name.toLowerCase() === `${params.owner}/${params.repo}`.toLowerCase(),
     'Unexpected target repository');
-  insist(pr.mergeable === true, 'Mergeability is unknown or the PR has conflicts; retry once resolved');
+  insist(pr.mergeable === true,
+    'Mergeability is unknown or the PR has conflicts; retry once resolved');
 }
 
 function checkPurpose(properties) {
@@ -45,7 +48,8 @@ async function checkChanges(github, params, pr) {
     'PR file list is empty or incomplete');
   for (const file of files) {
     insist(file.status === 'modified' && !file.previous_filename &&
-      LOCKFILES.has(path.basename(file.filename)), `Not an existing lockfile-only change: ${file.filename}`);
+      LOCKFILES.has(path.basename(file.filename)),
+    `Not an existing lockfile-only change: ${file.filename}`);
   }
   const {data: comparison} = await github.rest.repos.compareCommitsWithBasehead({
     ...params, basehead: `${pr.base.sha}...${pr.head.sha}`, per_page: 1});
@@ -58,8 +62,9 @@ async function checkChanges(github, params, pr) {
     return (before?.type !== 'tree' || after?.type !== 'tree') &&
       (before?.sha !== after?.sha || before?.mode !== after?.mode);
   });
-  insist(changed.length === files.length && changed.every(name => files.some(file => file.filename === name)),
-    'PR file list does not match the inspected commit trees');
+  insist(changed.length === files.length &&
+    changed.every(name => files.some(file => file.filename === name)),
+  'PR file list does not match the inspected commit trees');
   for (const file of files) {
     const before = await readLockfile(github, params, beforeTree, file.filename);
     const after = await readLockfile(github, params, afterTree, file.filename);
@@ -80,26 +85,31 @@ async function requirements(github, params, branch) {
     const {data} = await github.rest.repos.getBranchProtection({...params, branch});
     const legacy = data.required_status_checks;
     if (legacy) {
-      required.push(...(legacy.checks || []).map(check => ({context: check.context, app: check.app_id})));
+      required.push(...(legacy.checks || []).map(check => (
+        {context: check.context, app: check.app_id})));
       required.push(...(legacy.contexts || []).map(context => ({context})));
     }
   } catch (error) {
     // An inaccessible policy must not be mistaken for an absent one.
-    if (error.status !== 404 || error.response?.data?.message !== 'Branch not protected') throw error;
+    if (error.status !== 404 || error.response?.data?.message !== 'Branch not protected') {
+      throw error;
+    }
   }
   return required.filter(check => check.context !== REVIEW_CONTEXT);
 }
 
 function checkCi({checks, statuses, runs, required}) {
-  const eligibleSuites = new Set(runs.filter(run => CI_EVENTS.has(run.event)).map(run => run.check_suite_id));
+  const eligibleSuites = new Set(runs.filter(workflow => CI_EVENTS.has(workflow.event))
+    .map(workflow => workflow.check_suite_id));
   checks = checks.filter(check => check.app?.slug !== 'github-actions' ||
     (check.check_suite?.id && eligibleSuites.has(check.check_suite.id)));
   checks = checks.filter(check => check.name !== REVIEW_CONTEXT);
   statuses = statuses.filter(status => status.context !== REVIEW_CONTEXT);
   insist(checks.length + statuses.length > 0, 'No CI results found');
   for (const check of checks) {
-    insist(check.status === 'completed' && ['success', 'neutral', 'skipped'].includes(check.conclusion),
-      `CI check has not passed: ${check.name} (${check.status}/${check.conclusion})`);
+    insist(check.status === 'completed' &&
+      ['success', 'neutral', 'skipped'].includes(check.conclusion),
+    `CI check has not passed: ${check.name} (${check.status}/${check.conclusion})`);
   }
   // The status endpoint returns newest first. Keep the latest per SHA/context.
   const latest = new Map();
@@ -108,16 +118,17 @@ function checkCi({checks, statuses, runs, required}) {
     if (!latest.has(key)) latest.set(key, status);
   }
   for (const status of latest.values()) {
-    insist(status.state === 'success', `CI status has not passed: ${status.context} (${status.state})`);
+    insist(status.state === 'success',
+      `CI status has not passed: ${status.context} (${status.state})`);
   }
   const latestRuns = new Map();
-  for (const run of runs.filter(run => CI_EVENTS.has(run.event))) {
-    const key = `${run.head_sha}:${run.workflow_id}:${run.event}`;
-    if (!latestRuns.has(key) || run.id > latestRuns.get(key).id) latestRuns.set(key, run);
+  for (const workflow of runs.filter(workflow => CI_EVENTS.has(workflow.event))) {
+    const key = `${workflow.head_sha}:${workflow.workflow_id}:${workflow.event}`;
+    if (!latestRuns.has(key) || workflow.id > latestRuns.get(key).id) latestRuns.set(key, workflow);
   }
-  for (const run of latestRuns.values()) {
-    insist(run.status === 'completed' && run.conclusion === 'success',
-      `CI workflow has not passed: ${run.name} (${run.status}/${run.conclusion})`);
+  for (const workflow of latestRuns.values()) {
+    insist(workflow.status === 'completed' && workflow.conclusion === 'success',
+      `CI workflow has not passed: ${workflow.name} (${workflow.status}/${workflow.conclusion})`);
   }
   insist(checks.some(check => check.conclusion === 'success') || latest.size > 0,
     'CI contains only skipped/neutral checks');
@@ -125,7 +136,8 @@ function checkCi({checks, statuses, runs, required}) {
     const matches = checks.filter(check => check.name === requirement.context &&
       (!requirement.app || requirement.app === -1 || check.app?.id === requirement.app));
     const status = (!requirement.app || requirement.app === -1) &&
-      [...latest.values()].some(value => value.context === requirement.context && value.state === 'success');
+      [...latest.values()].some(value => (
+        value.context === requirement.context && value.state === 'success'));
     insist(matches.some(check => check.conclusion === 'success') || status,
       `Required CI result missing or not successful: ${requirement.context}`);
   }
@@ -136,9 +148,11 @@ async function inspectCi(github, params, pr) {
   const checks = [], statuses = [], runs = [];
   const refs = [pr.head.sha];
   if (pr.merge_commit_sha) {
-    const {data: merge} = await github.rest.git.getCommit({...params, commit_sha: pr.merge_commit_sha});
+    const {data: merge} = await github.rest.git.getCommit({
+      ...params, commit_sha: pr.merge_commit_sha});
     insist(merge.parents.length === 2 && merge.parents[0].sha === pr.base.sha &&
-      merge.parents[1].sha === pr.head.sha, 'Test merge is stale; wait for GitHub to regenerate it');
+      merge.parents[1].sha === pr.head.sha,
+    'Test merge is stale; wait for GitHub to regenerate it');
     refs.push(pr.merge_commit_sha);
   }
   for (const ref of refs) {
@@ -159,8 +173,9 @@ async function unchangedPr(github, params, original) {
   const {data: current} = await github.rest.pulls.get(params);
   checkPr(current, params);
   insist(current.head.sha === original.head.sha && current.base.sha === original.base.sha &&
-    current.base.ref === original.base.ref && current.merge_commit_sha === original.merge_commit_sha,
-    'PR head, base, or test merge changed during validation; dispatch again');
+    current.base.ref === original.base.ref &&
+    current.merge_commit_sha === original.merge_commit_sha,
+  'PR head, base, or test merge changed during validation; dispatch again');
   return current;
 }
 
@@ -187,13 +202,15 @@ async function run({github, core, repo, pr}) {
   await github.rest.issues.createComment({...params, issue_number: params.pull_number,
     body: `This PR qualifies for auto-merge: repository purpose is \`${purpose}\`, ` +
       `only existing lockfiles changed (${files.map(file => `\`${file}\``).join(', ')}), ` +
-      `all dependency version updates are non-breaking under semver (including 0.x), and CI passed.\n\n` +
+      'all dependency version updates are non-breaking under semver (including 0.x), ' +
+      'and CI passed.\n\n' +
       `Merging verified commit \`${pull.head.sha}\` as reviewable-ops. ` +
       `The code-review/reviewable status is intentionally exempt from the CI gate.`});
   await unchangedPr(github, params, pull);
   // Recheck CI immediately before the mutation, including reruns started during validation.
   await inspectCi(github, params, pull);
-  const {data: merged} = await github.rest.pulls.merge({...params, sha: pull.head.sha, merge_method: method});
+  const {data: merged} = await github.rest.pulls.merge({
+    ...params, sha: pull.head.sha, merge_method: method});
   insist(merged.merged === true, `GitHub did not merge the PR: ${merged.message}`);
   core.info(`Merged ${repo}#${pr} at ${merged.sha}`);
   await core.summary.addRaw(`Merged ${repo}#${pr}: ${merged.sha}`).write();

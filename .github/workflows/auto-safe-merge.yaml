@@ -39,7 +39,7 @@ jobs:
 
       - name: Install validator dependencies
         working-directory: auto-safe-merge
-        run: npm ci --ignore-scripts --no-audit --no-fund
+        run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 
       - name: Check eligibility, comment, and merge
         uses: actions/github-script@v8

@@ -20,5 +20,7 @@ jobs:
           package-manager-cache: false
       - run: npm ci --ignore-scripts --no-audit --no-fund
         working-directory: auto-safe-merge
+      - run: npm run lint
+        working-directory: auto-safe-merge
       - run: npm test
         working-directory: auto-safe-merge

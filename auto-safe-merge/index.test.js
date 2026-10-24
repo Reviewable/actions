@@ -1,3 +1,5 @@
+'use strict';
+
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {target, checkPurpose, checkCi, run} = require('./index');
@@ -7,7 +9,8 @@ function fixture() {
   const state = {
     purpose: 'tool', actor: 'reviewable-ops',
     pr: {state: 'open', merged: false, draft: false, mergeable: true, changed_files: 1,
-      head: {sha: 'head'}, base: {sha: 'base', ref: 'master', repo: {full_name: 'Reviewable/example'}},
+      head: {sha: 'head'},
+      base: {sha: 'base', ref: 'master', repo: {full_name: 'Reviewable/example'}},
       merge_commit_sha: 'merge'},
     files: [{filename: 'nested/yarn.lock', status: 'modified'}],
     checks: [{id: 1, name: 'Build', status: 'completed', conclusion: 'success', app: {id: 123}}],
@@ -31,13 +34,14 @@ function fixture() {
     users: {getAuthenticated: endpoint('actor', () => ({login: state.actor}))},
     repos: {
       get: endpoint('repo', () => ({allow_squash_merge: true})),
-      compareCommitsWithBasehead: endpoint('compare', () => ({merge_base_commit: {sha: 'ancestor'}})),
+      compareCommitsWithBasehead: endpoint('compare', () => (
+        {merge_base_commit: {sha: 'ancestor'}})),
       getBranchProtection: endpoint('protection', () => {
         if (state.protectionError) throw state.protectionError;
         return {};
       }),
       listCommitStatusesForRef: endpoint('statuses', args => args.ref === 'head' ? state.statuses :
-        state.mergeStatuses || []),
+      state.mergeStatuses || []),
     },
     pulls: {
       get: endpoint('pr', () => {
@@ -56,17 +60,20 @@ function fixture() {
       }),
     },
     git: {
-      getTree: endpoint('tree', args => ({tree: tree(args.tree_sha), truncated: Boolean(state.truncated)})),
+      getTree: endpoint('tree', args => (
+        {tree: tree(args.tree_sha), truncated: Boolean(state.truncated)})),
       getBlob: endpoint('blob', args => {
         const version = args.file_sha === 'old-blob' ? '1.20.8' : state.version;
         const text = `# yarn lockfile v1\n\n"body-parser@^1.20.0":\n  version "${version}"\n` +
           `  resolved "https://registry.npmjs.org/body-parser/-/body-parser-${version}.tgz"\n`;
         return {encoding: 'base64', content: Buffer.from(text).toString('base64')};
       }),
-      getCommit: endpoint('commit', () => ({parents: [{sha: state.staleMerge ? 'old-base' : 'base'}, {sha: 'head'}]})),
+      getCommit: endpoint('commit', () => (
+        {parents: [{sha: state.staleMerge ? 'old-base' : 'base'}, {sha: 'head'}]})),
     },
     checks: {listForRef: endpoint('checks', args => args.ref === 'head' ? state.checks : [])},
-    actions: {listWorkflowRunsForRepo: endpoint('runs', args => args.head_sha === 'head' ? state.runs : [])},
+    actions: {listWorkflowRunsForRepo: endpoint('runs', args => (
+      args.head_sha === 'head' ? state.runs : []))},
     issues: {createComment: endpoint('comment', args => {
       state.comment = true;
       state.commentBody = args.body;
@@ -79,20 +86,32 @@ function fixture() {
     assert.equal(args.per_page, 100);
     return typeof method === 'string' ? state.required : (await method(args)).data;
   }};
-  const core = {info() {}, summary: {addRaw() { return this; }, async write() {}}};
+  const core = {
+    info(message) {state.info = message;},
+    summary: {
+      addRaw(message) {
+        state.summary = message;
+        return this;
+      },
+      async write() {state.summaryWritten = true;}
+    }
+  };
   return {state, calls, execute: () => run({github, core, repo: 'Reviewable/example', pr: '12'})};
 }
 
 test('only explicit Reviewable repo names and positive PR numbers are accepted', () => {
   assert.equal(target('reviewable/a', '12').pull_number, 12);
-  for (const [repo, pr] of [['other/a', '1'], ['Reviewable/../a', '1'], ['Reviewable/a', '1; echo x'],
+  for (const [repo, pr] of [
+    ['other/a', '1'], ['Reviewable/../a', '1'], ['Reviewable/a', '1; echo x'],
     ['Reviewable/a', '0'], ['Reviewable/a', '9007199254740992']]) {
     assert.throws(() => target(repo, pr));
   }
 });
 
 test('purpose is the exact custom property value, not a topic or partial match', () => {
-  for (const purpose of ['tool', 'library']) assert.equal(checkPurpose([{property_name: 'purpose', value: purpose}]), purpose);
+  for (const purpose of ['tool', 'library']) {
+    assert.equal(checkPurpose([{property_name: 'purpose', value: purpose}]), purpose);
+  }
   for (const value of ['production', 'tool,library', ['tool'], null]) {
     assert.throws(() => checkPurpose([{property_name: 'purpose', value}]));
   }
@@ -110,30 +129,36 @@ test('eligible PR comments and merges exactly the validated head', async () => {
 });
 
 for (const [name, modify, error] of [
-  ['wrong identity', s => { s.actor = 'pkaminski'; }, /reviewable-ops/],
-  ['production repository', s => { s.purpose = 'production'; }, /purpose/],
-  ['draft', s => { s.pr.draft = true; }, /ready for review/],
-  ['closed', s => { s.pr.state = 'closed'; }, /open/],
-  ['unknown mergeability', s => { s.pr.mergeable = null; }, /Mergeability/],
-  ['source change', s => { s.files[0].filename = 'index.js'; }, /lockfile-only/],
-  ['new lockfile', s => { s.files[0].status = 'added'; }, /lockfile-only/],
-  ['renamed lockfile', s => { s.files[0].previous_filename = 'yarn.lock'; }, /lockfile-only/],
-  ['truncated files', s => { s.pr.changed_files = 2; }, /incomplete/],
-  ['truncated tree', s => { s.truncated = true; }, /truncated/],
-  ['symlink', s => { s.mode = '120000'; }, /regular lockfile/],
-  ['breaking update', s => { s.version = '2.4.0'; }, /Breaking/],
-  ['failed CI', s => { s.checks[0].conclusion = 'failure'; }, /CI check/],
-  ['pending CI', s => { s.checks[0].status = 'in_progress'; }, /CI check/],
-  ['no CI', s => { s.checks = []; s.runs = []; }, /No CI/],
-  ['all skipped', s => { s.checks[0].conclusion = 'skipped'; }, /only skipped/],
-  ['wrong CI app', s => { s.checks[0].app.id = 456; }, /Required CI/],
-  ['missing required check', s => { s.required[0].parameters.required_status_checks.push({context: 'Lint'}); }, /Required CI/],
-  ['pending workflow', s => { s.runs[0].status = 'queued'; }, /CI workflow/],
-  ['stale test merge', s => { s.staleMerge = true; }, /Test merge is stale/],
-  ['head race', s => { s.changeOnRead = 2; }, /changed during/],
-  ['base race', s => { s.baseChangeOnRead = 2; }, /changed during/],
-  ['unreadable protection', s => { s.protectionError = Object.assign(new Error('Forbidden'), {status: 403}); }, /Forbidden/],
-  ['ambiguous protection 404', s => { s.protectionError = Object.assign(new Error('Not Found'), {status: 404}); }, /Not Found/],
+  ['wrong identity', s => {s.actor = 'pkaminski';}, /reviewable-ops/],
+  ['production repository', s => {s.purpose = 'production';}, /purpose/],
+  ['draft', s => {s.pr.draft = true;}, /ready for review/],
+  ['closed', s => {s.pr.state = 'closed';}, /open/],
+  ['unknown mergeability', s => {s.pr.mergeable = null;}, /Mergeability/],
+  ['source change', s => {s.files[0].filename = 'index.js';}, /lockfile-only/],
+  ['new lockfile', s => {s.files[0].status = 'added';}, /lockfile-only/],
+  ['renamed lockfile', s => {s.files[0].previous_filename = 'yarn.lock';}, /lockfile-only/],
+  ['truncated files', s => {s.pr.changed_files = 2;}, /incomplete/],
+  ['truncated tree', s => {s.truncated = true;}, /truncated/],
+  ['symlink', s => {s.mode = '120000';}, /regular lockfile/],
+  ['breaking update', s => {s.version = '2.4.0';}, /Breaking/],
+  ['failed CI', s => {s.checks[0].conclusion = 'failure';}, /CI check/],
+  ['pending CI', s => {s.checks[0].status = 'in_progress';}, /CI check/],
+  ['no CI', s => {s.checks = []; s.runs = [];}, /No CI/],
+  ['all skipped', s => {s.checks[0].conclusion = 'skipped';}, /only skipped/],
+  ['wrong CI app', s => {s.checks[0].app.id = 456;}, /Required CI/],
+  ['missing required check', s => {
+    s.required[0].parameters.required_status_checks.push({context: 'Lint'});
+  }, /Required CI/],
+  ['pending workflow', s => {s.runs[0].status = 'queued';}, /CI workflow/],
+  ['stale test merge', s => {s.staleMerge = true;}, /Test merge is stale/],
+  ['head race', s => {s.changeOnRead = 2;}, /changed during/],
+  ['base race', s => {s.baseChangeOnRead = 2;}, /changed during/],
+  ['unreadable protection', s => {
+    s.protectionError = Object.assign(new Error('Forbidden'), {status: 403});
+  }, /Forbidden/],
+  ['ambiguous protection 404', s => {
+    s.protectionError = Object.assign(new Error('Not Found'), {status: 404});
+  }, /Not Found/],
 ]) {
   test(`${name} refuses before commenting or merging`, async () => {
     const f = fixture();
@@ -180,7 +205,7 @@ test('a refused merge is reported as a failure', async () => {
   await assert.rejects(f.execute(), /did not merge/);
 });
 
-test('a passing head status does not hide a failed test-merge status without a SHA field', async () => {
+test('a passing head status cannot hide a failed merge status without a SHA field', async () => {
   const f = fixture();
   f.state.statuses = [{context: 'External CI', state: 'success'}];
   f.state.mergeStatuses = [{context: 'External CI', state: 'failure'}];
@@ -191,10 +216,13 @@ test('a passing head status does not hide a failed test-merge status without a S
 
 test('latest statuses/runs replace older failures but unrelated failures remain blocking', () => {
   const data = {checks: [], required: [], statuses: [
-    {sha: 'head', context: 'Build', state: 'success'}, {sha: 'head', context: 'Build', state: 'failure'},
+    {sha: 'head', context: 'Build', state: 'success'},
+    {sha: 'head', context: 'Build', state: 'failure'},
   ], runs: [
-    {id: 2, head_sha: 'head', workflow_id: 1, event: 'push', status: 'completed', conclusion: 'success'},
-    {id: 1, head_sha: 'head', workflow_id: 1, event: 'push', status: 'completed', conclusion: 'failure'},
+    {id: 2, head_sha: 'head', workflow_id: 1, event: 'push',
+      status: 'completed', conclusion: 'success'},
+    {id: 1, head_sha: 'head', workflow_id: 1, event: 'push',
+      status: 'completed', conclusion: 'failure'},
   ]};
   assert.doesNotThrow(() => checkCi(data));
   data.statuses.push({sha: 'head', context: 'Lint', state: 'failure'});

@@ -1,3 +1,5 @@
+'use strict';
+
 const {isDeepStrictEqual: equal} = require('node:util');
 const path = require('node:path').posix;
 const {parseSyml} = require('@yarnpkg/parsers');
@@ -20,7 +22,8 @@ function registryTarball(source, name, version) {
   const url = URL.parse(source);
   const basename = name.split('/').pop();
   return Boolean(url && url.protocol === 'https:' && !url.username && !url.password &&
-    !url.port && !url.search && ['registry.npmjs.org', 'registry.yarnpkg.com'].includes(url.hostname) &&
+    !url.port && !url.search &&
+    ['registry.npmjs.org', 'registry.yarnpkg.com'].includes(url.hostname) &&
     decodeURIComponent(url.pathname) === `/${name}/-/${basename}-${version}.tgz`);
 }
 
@@ -59,6 +62,7 @@ function yarnEntries(text) {
 
 function npmEntries(text) {
   const data = JSON.parse(text);
+  const {packages, dependencies, ...metadata} = data;
   insist([1, 2, 3].includes(data.lockfileVersion), 'Unsupported npm lockfile format');
   const entries = new Map();
   const add = (key, name, value) => {
@@ -70,8 +74,8 @@ function npmEntries(text) {
       registry: registryTarball(value.resolved, name, version),
       artifact: [value.resolved, value.integrity]});
   };
-  const walk = (dependencies, prefix = '') => {
-    for (const [name, value] of Object.entries(dependencies || {})) {
+  const walk = (children, prefix = '') => {
+    for (const [name, value] of Object.entries(children || {})) {
       const key = `${prefix}node_modules/${name}`;
       const {dependencies: nested, ...flat} = value;
       add(key, name, flat);
@@ -79,15 +83,14 @@ function npmEntries(text) {
     }
   };
   if (data.lockfileVersion === 1) {
-    walk(data.dependencies);
+    walk(dependencies);
   } else {
-    insist(data.packages && typeof data.packages === 'object', 'Missing npm packages');
-    for (const [key, value] of Object.entries(data.packages)) {
+    insist(packages && typeof packages === 'object', 'Missing npm packages');
+    for (const [key, value] of Object.entries(packages)) {
       const name = key.split('node_modules/').pop();
       add(key, name, value);
     }
   }
-  const {packages, dependencies, ...metadata} = data;
   const resolve = (key, name) => {
     let prefix = key;
     while (true) {
@@ -104,18 +107,21 @@ function npmEntries(text) {
 
 function checkEdges(before, after, oldKey, newKey) {
   const previous = before.entries.get(oldKey), next = after.entries.get(newKey);
-  const dependencies = value => ({...value.requires, ...value.dependencies, ...value.optionalDependencies});
+  const dependencies = value => (
+    {...value.requires, ...value.dependencies, ...value.optionalDependencies});
   const oldDeps = dependencies(previous.value), newDeps = dependencies(next.value);
   for (const name of Object.keys(oldDeps)) {
     if (!Object.hasOwn(newDeps, name)) continue;
     const oldChild = before.resolve(oldKey, name, oldDeps[name]);
     const newChild = after.resolve(newKey, name, newDeps[name]);
-    // Optional/platform dependencies may be absent; new or removed packages have no version transition.
+    // Optional/platform dependencies may be absent.
+    // New or removed packages have no version transition.
     if (!oldChild || !newChild) continue;
     insist(oldChild.name === newChild.name, `Dependency identity changed: ${newKey} -> ${name}`);
     if (oldChild.version === newChild.version) continue;
-    insist(oldChild.registry && newChild.registry && compatible(oldChild.version, newChild.version),
-      `Breaking dependency edge: ${newKey} -> ${name} (${oldChild.version} -> ${newChild.version})`);
+    insist(oldChild.registry && newChild.registry &&
+      compatible(oldChild.version, newChild.version),
+    `Breaking dependency edge: ${newKey} -> ${name} (${oldChild.version} -> ${newChild.version})`);
   }
 }
 
@@ -134,10 +140,12 @@ function checkEntries(before, after) {
     insist(next.registry && semver.valid(next.version) && !semver.prerelease(next.version),
       `Cannot establish a stable registry update for ${key}`);
     if (previous) {
-      insist(previous.registry && previous.name === next.name && compatible(previous.version, next.version),
-        `Breaking or unverified update: ${key} (${previous.version} -> ${next.version})`);
+      insist(previous.registry && previous.name === next.name &&
+        compatible(previous.version, next.version),
+      `Breaking or unverified update: ${key} (${previous.version} -> ${next.version})`);
       if (previous.version === next.version) {
-        insist(equal(previous.artifact, next.artifact), `Artifact changed without a version update: ${key}`);
+        insist(equal(previous.artifact, next.artifact),
+          `Artifact changed without a version update: ${key}`);
         const metadata = ({dev, optional, devOptional, peer, ...rest}) => rest;
         insist(equal(metadata(previous.value), metadata(next.value)),
           `Package metadata changed without a version update: ${key}`);
@@ -148,12 +156,15 @@ function checkEntries(before, after) {
       // Entries can move during hoisting/deduplication or change range descriptors.
       // Never let a renamed descriptor disguise a new incompatible version line.
       const candidates = byName.get(next.name) || [];
-      insist(!candidates.length || candidates.some(old => old.registry && compatible(old.version, next.version)),
+      const compatibleCandidates = candidates.filter(old => (
+        old.registry && compatible(old.version, next.version)));
+      insist(!candidates.length || compatibleCandidates.length > 0,
         `New incompatible version line: ${next.name}@${next.version}`);
-      for (const old of candidates.filter(old => old.registry && compatible(old.version, next.version))) {
+      for (const old of compatibleCandidates) {
         checkEdges(before, after, old.key, key);
         if (old.version === next.version) {
-          insist(equal(old.artifact, next.artifact), `Artifact changed for relocated entry: ${key}`);
+          insist(equal(old.artifact, next.artifact),
+            `Artifact changed for relocated entry: ${key}`);
         }
       }
       if (candidates.length && !candidates.some(old => old.version === next.version)) upgrades++;
