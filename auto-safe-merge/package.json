@@ -1,0 +1,13 @@
+{
+  "name": "reviewable-auto-safe-merge",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Validate lockfile-only dependency PRs before merging as reviewable-ops",
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@yarnpkg/parsers": "3.1.0",
+    "semver": "7.8.5"
+  }
+}
