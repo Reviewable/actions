@@ -73,8 +73,15 @@ function fixture() {
       getCommit: endpoint('commit', () => (
         {parents: [{sha: state.staleMerge ? 'old-base' : 'base'}, {sha: 'head'}]})),
     },
-    checks: {listForRef: endpoint('checks', args => (
-      args.ref === 'head' ? state.checks : state.mergeChecks || []))},
+    checks: {
+      listForRef: endpoint('checks', args => (
+        args.ref === 'head' ? state.checks : state.mergeChecks || [])),
+      listSuitesForRef: endpoint('suites', args => {
+        assert.equal(args.per_page, 1);
+        if (state.suitesError) throw state.suitesError;
+        return {total_count: state.suiteCounts ? state.suiteCounts[args.ref] : 1};
+      }),
+    },
     actions: {listWorkflowRunsForRepo: endpoint('runs', args => (
       args.head_sha === 'head' ? state.runs : state.mergeRuns || []))},
     issues: {createComment: endpoint('comment', args => {
@@ -216,6 +223,42 @@ test('head CI qualifies when there is no test-merge commit', async () => {
   await f.execute();
   assert.equal(f.state.merged, true);
   assert.equal(f.calls.filter(call => call.name === 'checks').length, 1);
+});
+
+for (const ref of ['head', 'merge']) {
+  for (const count of [1000, 1001, undefined, -1]) {
+    test(`${ref} with ${count} check suites refuses even with few successful checks`, async () => {
+      const f = fixture();
+      f.state.suiteCounts = {head: 1, merge: 1, [ref]: count};
+      f.state.mergeChecks = [{...f.state.checks[0]}];
+      await assert.rejects(f.execute(), new RegExp(`Check-run history.*${ref}`));
+      assert.equal(f.state.comment, false);
+      assert.equal(f.state.merged, false);
+    });
+  }
+}
+
+test('suite counts below the cap permit complete check results on both commits', async () => {
+  const f = fixture();
+  f.state.suiteCounts = {head: 999, merge: 999};
+  f.state.mergeChecks = [{...f.state.checks[0]}];
+  await f.execute();
+  assert.equal(f.state.merged, true);
+  for (const ref of ['head', 'merge']) {
+    const checksIndex = f.calls.findIndex(call => call.name === 'checks' && call.args.ref === ref);
+    const suitesIndex = f.calls.findIndex(call => call.name === 'suites' && call.args.ref === ref);
+    assert.ok(suitesIndex > checksIndex);
+    assert.equal(f.calls[suitesIndex].args.app_id, undefined);
+    assert.equal(f.calls[suitesIndex].args.check_name, undefined);
+  }
+});
+
+test('an unreadable check-suite count refuses before commenting or merging', async () => {
+  const f = fixture();
+  f.state.suitesError = new Error('Check suites unavailable');
+  await assert.rejects(f.execute(), /Check suites unavailable/);
+  assert.equal(f.state.comment, false);
+  assert.equal(f.state.merged, false);
 });
 
 for (const [name, modify, error] of [

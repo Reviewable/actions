@@ -41,6 +41,9 @@ Eligibility is checked independently of the PR's title or author:
   `code-review/reviewable` is excluded.
   A successful commit status alone counts as CI evidence only when branch policy
   explicitly requires that context without an app restriction.
+  Both commits must have fewer than 1,000 check suites; an unavailable or invalid
+  suite count also requires manual handling, since the check-run API can omit older
+  suites at its cap. Workflow histories reaching their 1,000-result cap are rejected too.
 - Unsupported ruleset requirements, including deployments, code scanning, merge
   queues, required workflows, and strict up-to-date policies, require manual handling
   unless GitHub confirms that the token can bypass that specific ruleset. The workflow

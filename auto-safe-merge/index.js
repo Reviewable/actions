@@ -264,6 +264,12 @@ async function inspectCi(github, params, pr, method) {
   for (const ref of refs) {
     const commitChecks = await github.paginate(github.rest.checks.listForRef,
       {...params, ref, filter: 'latest', per_page: 100});
+    // The ref endpoint caps suites, not runs. Read the unfiltered count after collecting runs.
+    const {data: suites} = await github.rest.checks.listSuitesForRef({...params, ref, per_page: 1});
+    insist(
+      Number.isSafeInteger(suites.total_count) && suites.total_count >= 0 &&
+        suites.total_count < 1000,
+      `Check-run history may be truncated for ${ref}; verify and merge manually`);
     checks.push(...commitChecks.map(check => ({...check, sha: ref})));
     const commitStatuses = await github.paginate(github.rest.repos.listCommitStatusesForRef,
       {...params, ref, per_page: 100});
