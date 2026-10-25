@@ -27,8 +27,10 @@ Eligibility is checked independently of the PR's title or author:
   without a version change, and unverifiable lockfile migrations require manual review.
   Npm peer edges use ancestor resolution. Same-version executable, dependency, or
   optionality metadata edits require manual review, including relocated entries.
-- CI on the current head and any current test-merge commit has passed, including
-  required checks from active rulesets and legacy branch protection. Missing,
+- Reported CI on the current head and any current test-merge commit has passed.
+  Required checks from active rulesets and legacy branch protection must all pass
+  on the test-merge commit when it has eligible CI results, otherwise on the head.
+  Results from different commits cannot combine to satisfy requirements. Missing,
   pending, failed, or all-skipped CI does not qualify. Only the review status
   `code-review/reviewable` is excluded. Required-workflow rules need manual review.
   A successful commit status alone counts as CI evidence only when branch policy

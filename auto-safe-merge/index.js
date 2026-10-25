@@ -101,7 +101,7 @@ async function requirements(github, params, branch) {
   return required.filter(check => check.context !== REVIEW_CONTEXT);
 }
 
-function checkCi({checks, statuses, runs, required}) {
+function checkCi({checks, statuses, runs, required, headSha, mergeSha}) {
   const eligibleSuites = new Set(runs.filter(workflow => CI_EVENTS.has(workflow.event))
     .map(workflow => workflow.check_suite_id));
   checks = checks.filter(check => check.app?.slug !== 'github-actions' ||
@@ -134,14 +134,21 @@ function checkCi({checks, statuses, runs, required}) {
     insist(workflow.status === 'completed' && workflow.conclusion === 'success',
       `CI workflow has not passed: ${workflow.name} (${workflow.status}/${workflow.conclusion})`);
   }
+  // Prefer test-merge results when present, as GitHub does. Require the entire set on one SHA.
+  const requiredSha = mergeSha && (checks.some(check => check.sha === mergeSha) ||
+    statuses.some(status => status.sha === mergeSha)) ? mergeSha : headSha;
+  const requiredChecks = checks.filter(check => !requiredSha || check.sha === requiredSha);
+  const requiredStatuses = [...latest.values()].filter(status => (
+    !requiredSha || status.sha === requiredSha));
   const requiredStatus = requirement => (!requirement.app || requirement.app === -1) &&
-    [...latest.values()].some(value => (
+    requiredStatuses.some(value => (
       value.context === requirement.context && value.state === 'success'));
   // A standalone status is CI evidence only when the repository's policy requires it.
-  insist(checks.some(check => check.conclusion === 'success') || required.some(requiredStatus),
+  insist(
+    requiredChecks.some(check => check.conclusion === 'success') || required.some(requiredStatus),
     'CI contains only skipped/neutral checks or unrequired commit statuses');
   for (const requirement of required) {
-    const matches = checks.filter(check => check.name === requirement.context &&
+    const matches = requiredChecks.filter(check => check.name === requirement.context &&
       (!requirement.app || requirement.app === -1 || check.app?.id === requirement.app));
     insist(matches.some(check => check.conclusion === 'success') || requiredStatus(requirement),
       `Required CI result missing or not successful: ${requirement.context}`);
@@ -162,8 +169,9 @@ async function inspectCi(github, params, pr) {
     refs.push(pr.merge_commit_sha);
   }
   for (const ref of refs) {
-    checks.push(...await github.paginate(github.rest.checks.listForRef,
-      {...params, ref, filter: 'latest', per_page: 100}));
+    const commitChecks = await github.paginate(github.rest.checks.listForRef,
+      {...params, ref, filter: 'latest', per_page: 100});
+    checks.push(...commitChecks.map(check => ({...check, sha: ref})));
     const commitStatuses = await github.paginate(github.rest.repos.listCommitStatusesForRef,
       {...params, ref, per_page: 100});
     statuses.push(...commitStatuses.map(status => ({...status, sha: ref})));
@@ -172,7 +180,7 @@ async function inspectCi(github, params, pr) {
     insist(workflows.length < 1000, 'Workflow run history may be truncated');
     runs.push(...workflows);
   }
-  checkCi({checks, statuses, runs, required});
+  checkCi({checks, statuses, runs, required, headSha: pr.head.sha, mergeSha: pr.merge_commit_sha});
 }
 
 async function unchangedPr(github, params, original) {

@@ -71,9 +71,10 @@ function fixture() {
       getCommit: endpoint('commit', () => (
         {parents: [{sha: state.staleMerge ? 'old-base' : 'base'}, {sha: 'head'}]})),
     },
-    checks: {listForRef: endpoint('checks', args => args.ref === 'head' ? state.checks : [])},
+    checks: {listForRef: endpoint('checks', args => (
+      args.ref === 'head' ? state.checks : state.mergeChecks || []))},
     actions: {listWorkflowRunsForRepo: endpoint('runs', args => (
-      args.head_sha === 'head' ? state.runs : []))},
+      args.head_sha === 'head' ? state.runs : state.mergeRuns || []))},
     issues: {createComment: endpoint('comment', args => {
       if (state.commentError) throw state.commentError;
       state.comment = true;
@@ -119,7 +120,7 @@ test('purpose is the exact custom property value, not a topic or partial match',
   }
 });
 
-test('eligible PR comments and merges exactly the validated head', async () => {
+test('head-only CI qualifies and merges exactly the validated head', async () => {
   const f = fixture();
   await f.execute();
   assert.equal(f.state.merged, true);
@@ -130,6 +131,78 @@ test('eligible PR comments and merges exactly the validated head', async () => {
   assert.equal(f.calls.filter(call => call.name === 'checks').length, 2);
   const commentIndex = f.calls.findIndex(call => call.name === 'comment');
   assert.deepEqual(f.calls.slice(commentIndex).map(call => call.name), ['comment', 'merge']);
+});
+
+test('required check runs cannot be combined across head and test-merge commits', async () => {
+  const f = fixture();
+  f.state.mergeChecks = [{...f.state.checks[0], name: 'Lint'}];
+  f.state.required[0].parameters.required_status_checks.push({context: 'Lint'});
+  await assert.rejects(f.execute(), /Required CI result missing or not successful: Build/);
+  assert.equal(f.state.comment, false);
+  assert.equal(f.state.merged, false);
+});
+
+test('required statuses cannot be combined across head and test-merge commits', async () => {
+  const f = fixture();
+  f.state.checks = [];
+  f.state.statuses = [{context: 'Build', state: 'success'}];
+  f.state.mergeStatuses = [{context: 'Lint', state: 'success'}];
+  f.state.required[0].parameters.required_status_checks = [{context: 'Build'}, {context: 'Lint'}];
+  await assert.rejects(f.execute(), /Required CI result missing or not successful: Build/);
+  assert.equal(f.state.comment, false);
+  assert.equal(f.state.merged, false);
+});
+
+test('head check from the required app cannot replace a test-merge check from another app',
+  async () => {
+    const f = fixture();
+    f.state.mergeChecks = [{...f.state.checks[0], app: {id: 456}}];
+    await assert.rejects(f.execute(), /Required CI result missing or not successful: Build/);
+    assert.equal(f.state.comment, false);
+    assert.equal(f.state.merged, false);
+  });
+
+test('successful head CI cannot qualify an all-skipped test merge', async () => {
+  const f = fixture();
+  f.state.mergeChecks = [{...f.state.checks[0], conclusion: 'skipped'}];
+  await assert.rejects(f.execute(), /only skipped/);
+  assert.equal(f.state.comment, false);
+  assert.equal(f.state.merged, false);
+});
+
+test('complete test-merge CI qualifies without duplicated head results', async () => {
+  const f = fixture();
+  f.state.mergeChecks = f.state.checks;
+  f.state.checks = [];
+  await f.execute();
+  assert.equal(f.state.merged, true);
+});
+
+test('complete test-merge CI does not require every context on the head as well', async () => {
+  const f = fixture();
+  f.state.mergeChecks = [{...f.state.checks[0]}];
+  f.state.checks[0].name = 'Other check';
+  await f.execute();
+  assert.equal(f.state.merged, true);
+});
+
+test('exempt review and ineligible manual checks do not select test-merge CI', async () => {
+  const f = fixture();
+  f.state.mergeStatuses = [{context: 'code-review/reviewable', state: 'pending'}];
+  f.state.mergeChecks = [{...f.state.checks[0], app: {slug: 'github-actions'},
+    check_suite: {id: 42}}];
+  f.state.mergeRuns = [{id: 2, check_suite_id: 42, head_sha: 'merge', workflow_id: 11,
+    event: 'workflow_dispatch', status: 'completed', conclusion: 'success'}];
+  await f.execute();
+  assert.equal(f.state.merged, true);
+});
+
+test('head CI qualifies when there is no test-merge commit', async () => {
+  const f = fixture();
+  f.state.pr.merge_commit_sha = null;
+  await f.execute();
+  assert.equal(f.state.merged, true);
+  assert.equal(f.calls.filter(call => call.name === 'checks').length, 1);
 });
 
 for (const [name, modify, error] of [
