@@ -9,7 +9,8 @@ const CI_EVENTS = new Set(['push', 'pull_request', 'pull_request_target', 'pull_
 
 function target(repo, pr) {
   insist(/^Reviewable\/[A-Za-z0-9_.-]+$/i.test(repo), 'repo must be Reviewable/name');
-  insist(/^[1-9][0-9]*$/.test(pr) && Number.isSafeInteger(Number(pr)), 'pr must be a positive integer');
+  insist(/^[1-9][0-9]*$/.test(pr) && Number.isSafeInteger(Number(pr)),
+    'pr must be a positive integer');
   return {owner: 'Reviewable', repo: repo.split('/')[1], pull_number: Number(pr)};
 }
 
@@ -47,9 +48,10 @@ async function checkChanges(github, params, pr) {
   insist(files.length > 0 && files.length === pr.changed_files && files.length < 3000,
     'PR file list is empty or incomplete');
   for (const file of files) {
-    insist(file.status === 'modified' && !file.previous_filename &&
-      LOCKFILES.has(path.basename(file.filename)),
-    `Not an existing lockfile-only change: ${file.filename}`);
+    insist(
+      file.status === 'modified' && !file.previous_filename &&
+        LOCKFILES.has(path.basename(file.filename)),
+      `Not an existing lockfile-only change: ${file.filename}`);
   }
   const {data: comparison} = await github.rest.repos.compareCommitsWithBasehead({
     ...params, basehead: `${pr.base.sha}...${pr.head.sha}`, per_page: 1});
@@ -62,9 +64,10 @@ async function checkChanges(github, params, pr) {
     return (before?.type !== 'tree' || after?.type !== 'tree') &&
       (before?.sha !== after?.sha || before?.mode !== after?.mode);
   });
-  insist(changed.length === files.length &&
-    changed.every(name => files.some(file => file.filename === name)),
-  'PR file list does not match the inspected commit trees');
+  insist(
+    changed.length === files.length &&
+      changed.every(name => files.some(file => file.filename === name)),
+    'PR file list does not match the inspected commit trees');
   for (const file of files) {
     const before = await readLockfile(github, params, beforeTree, file.filename);
     const after = await readLockfile(github, params, afterTree, file.filename);
@@ -107,9 +110,10 @@ function checkCi({checks, statuses, runs, required}) {
   statuses = statuses.filter(status => status.context !== REVIEW_CONTEXT);
   insist(checks.length + statuses.length > 0, 'No CI results found');
   for (const check of checks) {
-    insist(check.status === 'completed' &&
-      ['success', 'neutral', 'skipped'].includes(check.conclusion),
-    `CI check has not passed: ${check.name} (${check.status}/${check.conclusion})`);
+    insist(
+      check.status === 'completed' &&
+        ['success', 'neutral', 'skipped'].includes(check.conclusion),
+      `CI check has not passed: ${check.name} (${check.status}/${check.conclusion})`);
   }
   // The status endpoint returns newest first. Keep the latest per SHA/context.
   const latest = new Map();
@@ -150,9 +154,10 @@ async function inspectCi(github, params, pr) {
   if (pr.merge_commit_sha) {
     const {data: merge} = await github.rest.git.getCommit({
       ...params, commit_sha: pr.merge_commit_sha});
-    insist(merge.parents.length === 2 && merge.parents[0].sha === pr.base.sha &&
-      merge.parents[1].sha === pr.head.sha,
-    'Test merge is stale; wait for GitHub to regenerate it');
+    insist(
+      merge.parents.length === 2 && merge.parents[0].sha === pr.base.sha &&
+        merge.parents[1].sha === pr.head.sha,
+      'Test merge is stale; wait for GitHub to regenerate it');
     refs.push(pr.merge_commit_sha);
   }
   for (const ref of refs) {
@@ -172,10 +177,11 @@ async function inspectCi(github, params, pr) {
 async function unchangedPr(github, params, original) {
   const {data: current} = await github.rest.pulls.get(params);
   checkPr(current, params);
-  insist(current.head.sha === original.head.sha && current.base.sha === original.base.sha &&
-    current.base.ref === original.base.ref &&
-    current.merge_commit_sha === original.merge_commit_sha,
-  'PR head, base, or test merge changed during validation; dispatch again');
+  insist(
+    current.head.sha === original.head.sha && current.base.sha === original.base.sha &&
+      current.base.ref === original.base.ref &&
+      current.merge_commit_sha === original.merge_commit_sha,
+    'PR head, base, or test merge changed during validation; dispatch again');
   return current;
 }
 
@@ -199,6 +205,7 @@ async function run({github, core, repo, pr}) {
   const method = repository.allow_squash_merge ? 'squash' :
     repository.allow_rebase_merge ? 'rebase' : repository.allow_merge_commit ? 'merge' : null;
   insist(method, 'No merge method is enabled');
+  // The qualification comment commits us to the merge request; finish every check before posting.
   await github.rest.issues.createComment({...params, issue_number: params.pull_number,
     body: `This PR qualifies for auto-merge: repository purpose is \`${purpose}\`, ` +
       `only existing lockfiles changed (${files.map(file => `\`${file}\``).join(', ')}), ` +
@@ -206,9 +213,6 @@ async function run({github, core, repo, pr}) {
       'and CI passed.\n\n' +
       `Merging verified commit \`${pull.head.sha}\` as reviewable-ops. ` +
       `The code-review/reviewable status is intentionally exempt from the CI gate.`});
-  await unchangedPr(github, params, pull);
-  // Recheck CI immediately before the mutation, including reruns started during validation.
-  await inspectCi(github, params, pull);
   const {data: merged} = await github.rest.pulls.merge({
     ...params, sha: pull.head.sha, merge_method: method});
   insist(merged.merged === true, `GitHub did not merge the PR: ${merged.message}`);

@@ -75,8 +75,10 @@ function fixture() {
     actions: {listWorkflowRunsForRepo: endpoint('runs', args => (
       args.head_sha === 'head' ? state.runs : []))},
     issues: {createComment: endpoint('comment', args => {
+      if (state.commentError) throw state.commentError;
       state.comment = true;
       state.commentBody = args.body;
+      if (state.baseChangesAfterComment) state.pr.base.sha = 'new-base';
       if (state.ciFailsAfterComment) state.checks[0].conclusion = 'failure';
       return {};
     })},
@@ -125,7 +127,9 @@ test('eligible PR comments and merges exactly the validated head', async () => {
   assert.match(f.state.commentBody, /head/);
   assert.equal(f.calls.filter(call => call.name === 'merge').length, 1);
   assert.equal(f.calls.find(call => call.name === 'compare').args.basehead, 'base...head');
-  assert.equal(f.calls.filter(call => call.name === 'checks').length, 4);
+  assert.equal(f.calls.filter(call => call.name === 'checks').length, 2);
+  const commentIndex = f.calls.findIndex(call => call.name === 'comment');
+  assert.deepEqual(f.calls.slice(commentIndex).map(call => call.name), ['comment', 'merge']);
 });
 
 for (const [name, modify, error] of [
@@ -184,19 +188,32 @@ test('non-breaking lockfile deduplication does not require a version bump', asyn
   assert.equal(f.state.merged, true);
 });
 
-test('a changed head after the comment still prevents merging', async () => {
+test('a base change while posting the comment does not delay the merge request', async () => {
   const f = fixture();
-  f.state.changeOnRead = 3;
-  await assert.rejects(f.execute(), /changed during/);
+  f.state.baseChangesAfterComment = true;
+  await f.execute();
   assert.equal(f.state.comment, true);
-  assert.equal(f.state.merged, false);
+  assert.equal(f.state.pr.base.sha, 'new-base');
+  assert.equal(f.state.reads, 2);
+  assert.equal(f.state.merged, true);
 });
 
-test('a CI rerun after the comment still prevents merging', async () => {
+test('a CI change while posting the comment does not delay the merge request', async () => {
   const f = fixture();
   f.state.ciFailsAfterComment = true;
-  await assert.rejects(f.execute(), /CI check/);
+  await f.execute();
+  assert.equal(f.state.checks[0].conclusion, 'failure');
+  assert.equal(f.calls.filter(call => call.name === 'checks').length, 2);
+  assert.equal(f.state.merged, true);
+});
+
+test('a failed qualification comment prevents the merge request', async () => {
+  const f = fixture();
+  f.state.commentError = new Error('Comment failed');
+  await assert.rejects(f.execute(), /Comment failed/);
+  assert.equal(f.state.comment, false);
   assert.equal(f.state.merged, false);
+  assert.equal(f.calls.some(call => call.name === 'merge'), false);
 });
 
 test('a refused merge is reported as a failure', async () => {

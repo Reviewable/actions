@@ -119,9 +119,11 @@ function checkEdges(before, after, oldKey, newKey) {
     if (!oldChild || !newChild) continue;
     insist(oldChild.name === newChild.name, `Dependency identity changed: ${newKey} -> ${name}`);
     if (oldChild.version === newChild.version) continue;
-    insist(oldChild.registry && newChild.registry &&
-      compatible(oldChild.version, newChild.version),
-    `Breaking dependency edge: ${newKey} -> ${name} (${oldChild.version} -> ${newChild.version})`);
+    insist(
+      oldChild.registry && newChild.registry &&
+        compatible(oldChild.version, newChild.version),
+      `Breaking dependency edge: ${newKey} -> ${name} ` +
+        `(${oldChild.version} -> ${newChild.version})`);
   }
 }
 
@@ -140,9 +142,10 @@ function checkEntries(before, after) {
     insist(next.registry && semver.valid(next.version) && !semver.prerelease(next.version),
       `Cannot establish a stable registry update for ${key}`);
     if (previous) {
-      insist(previous.registry && previous.name === next.name &&
-        compatible(previous.version, next.version),
-      `Breaking or unverified update: ${key} (${previous.version} -> ${next.version})`);
+      insist(
+        previous.registry && previous.name === next.name &&
+          compatible(previous.version, next.version),
+        `Breaking or unverified update: ${key} (${previous.version} -> ${next.version})`);
       if (previous.version === next.version) {
         insist(equal(previous.artifact, next.artifact),
           `Artifact changed without a version update: ${key}`);

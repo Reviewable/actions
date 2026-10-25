@@ -32,11 +32,12 @@ Eligibility is checked independently of the PR's title or author:
 
 The workflow reads target files as data through the GitHub API; it never checks
 out the target PR, installs its dependencies, or executes its scripts. It posts
-the qualification comment and merges the verified head using squash when enabled,
-otherwise rebase or merge. A changed head/base or failed recheck aborts the merge;
-dispatch again after resolving the issue. Security updates can qualify under the
-same rules. A successful dispatch merges immediately rather than enabling GitHub's
-deferred auto-merge setting.
+the qualification comment and immediately requests merging the verified head using
+squash when enabled, otherwise rebase or merge. All eligibility checks and head/base
+rechecks finish before posting; no checks run between the comment and merge request.
+The request still specifies the verified head SHA, and a merge refused by GitHub is
+reported as a failure. Security updates can qualify under the same rules. A successful
+dispatch merges immediately rather than enabling GitHub's deferred auto-merge setting.
 
 From `auto-safe-merge/`, run `npm ci --ignore-scripts`, `npm run lint`, and `npm test`.
 ESLint uses the shared `reviewable-configs` baseline for the validator, tests, and

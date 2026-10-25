@@ -41,12 +41,13 @@ for (const format of [1, 2, 3]) {
     const lock = version => {
       const entry = npmEntry('body-parser', version);
       return format === 1 ? npmLock(1, {'body-parser': entry}) :
-        npmLock(format, {
-          '': {name: 'example', version: '1.0.0'}, 'node_modules/body-parser': entry},
-        format === 2 ? {'body-parser': entry} : undefined);
+        npmLock(
+          format, {'': {name: 'example', version: '1.0.0'}, 'node_modules/body-parser': entry},
+          format === 2 ? {'body-parser': entry} : undefined);
     };
     assert.equal(checkLockfile('tools/package-lock.json', lock('1.20.8'), lock('1.20.9')), 1);
-    assert.throws(() => checkLockfile('npm-shrinkwrap.json', lock('1.20.8'), lock('2.4.0')), /Breaking/);
+    assert.throws(() => checkLockfile('npm-shrinkwrap.json', lock('1.20.8'), lock('2.4.0')),
+      /Breaking/);
   });
 }
 
@@ -55,7 +56,8 @@ test('changes to duplicate transitive versions are checked independently', () =>
     'node_modules/undici': npmEntry('undici', '8.12.2'),
     'node_modules/a/node_modules/undici': npmEntry('undici', version),
   });
-  assert.throws(() => checkLockfile('package-lock.json', lock('6.27.0'), lock('8.12.2')), /Breaking/);
+  assert.throws(() => checkLockfile('package-lock.json', lock('6.27.0'), lock('8.12.2')),
+    /Breaking/);
 });
 
 test('renaming Yarn descriptors cannot disguise a breaking update', () => {
@@ -95,7 +97,8 @@ test('workspace and Git entries can remain unchanged but cannot be changed', () 
   const after = parseSyml(make('abc'));
   after['a@npm:^1.0.0'] = yarnEntry('a', '1.1.0');
   assert.equal(checkLockfile('yarn.lock', make('abc'), stringifySyml(after)), 1);
-  assert.throws(() => checkLockfile('yarn.lock', make('abc'), make('def')), /stable registry update/);
+  assert.throws(() => checkLockfile('yarn.lock', make('abc'), make('def')),
+    /stable registry update/);
 });
 
 test('aliases retain package identity and registry URLs cannot change hosts', () => {
@@ -115,9 +118,9 @@ test('checksum-only edits and format migrations are not version upgrades', () =>
   const before = berry({'a@npm:^1.0.0': yarnEntry('a', '1.0.0')});
   assert.throws(() => checkLockfile('yarn.lock', before, before.replace('10c0/1.0.0', '10c0/evil')),
     /Artifact changed/);
-  assert.throws(() => checkLockfile('yarn.lock', before,
-    before.replace('version: 8', 'version: 9')),
-  /metadata changed/);
+  assert.throws(
+    () => checkLockfile('yarn.lock', before, before.replace('version: 8', 'version: 9')),
+    /metadata changed/);
   assert.throws(() => checkLockfile('pnpm-lock.yaml', before, before), /Not a supported/);
 });
 
