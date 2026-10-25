@@ -6,6 +6,7 @@ const {LOCKFILES, insist, checkLockfile} = require('./lockfiles');
 const REVIEW_CONTEXT = 'code-review/reviewable';
 const CI_EVENTS = new Set(['push', 'pull_request', 'pull_request_target', 'pull_request_review',
   'deployment', 'deployment_status']);
+const BYPASS_MODES = new Set(['always', 'pull_requests_only', 'exempt']);
 
 function target(repo, pr) {
   insist(/^Reviewable\/[A-Za-z0-9_.-]+$/i.test(repo), 'repo must be Reviewable/name');
@@ -76,11 +77,60 @@ async function checkChanges(github, params, pr) {
   return files.map(file => file.filename);
 }
 
-async function requirements(github, params, branch) {
+function supportsRule(rule, method) {
+  switch (rule.type) {
+    // Merging an open PR neither creates/deletes the base branch nor force-pushes it.
+    case 'creation': case 'deletion': case 'non_fast_forward': return true;
+    case 'required_status_checks':
+      return !rule.parameters?.strict_required_status_checks_policy;
+    case 'required_linear_history': return method === 'squash' || method === 'rebase';
+    case 'pull_request':
+      return Object.entries(rule.parameters || {}).every(([name, value]) => {
+        switch (name) {
+          case 'allowed_merge_methods': return value.includes(method);
+          case 'dismiss_stale_reviews_on_push': return true;
+          case 'required_approving_review_count': return value === 0;
+          case 'required_reviewers': return value.length === 0;
+          case 'require_code_owner_review': case 'require_last_push_approval':
+          case 'required_review_thread_resolution':
+          case 'require_extra_approval_for_unattributed_changes':
+            return value === false;
+          default: return false;
+        }
+      });
+    default: return false;
+  }
+}
+
+async function checkRules(github, params, rules, method) {
+  const rulesets = new Map();
+  for (const rule of rules.filter(value => !supportsRule(value, method))) {
+    const id = rule.ruleset_id;
+    insist(Number.isSafeInteger(id) && id > 0,
+      `Cannot identify ruleset for unsupported merge requirement: ${rule.type}`);
+    if (!rulesets.has(id)) {
+      try {
+        const {data} = await github.request('GET /repos/{owner}/{repo}/rulesets/{ruleset_id}',
+          {...params, ruleset_id: id, includes_parents: true});
+        rulesets.set(id, data);
+      } catch (error) {
+        throw new Error(`Cannot read ruleset #${id} for ${rule.type}: ${error.message}`,
+          {cause: error});
+      }
+    }
+    const ruleset = rulesets.get(id);
+    if (BYPASS_MODES.has(ruleset.current_user_can_bypass)) continue;
+    const reason = ruleset.current_user_can_bypass === 'never' ?
+      'reviewable-ops cannot bypass this ruleset' : 'reviewable-ops bypass permission is unknown';
+    throw new Error(`Unsupported merge requirement ${rule.type} in ruleset ` +
+      `"${ruleset.name}" (#${id}): ${reason}. Verify and merge manually.`);
+  }
+}
+
+async function requirements(github, params, branch, method) {
   const rules = await github.paginate('GET /repos/{owner}/{repo}/rules/branches/{branch}',
     {...params, branch, per_page: 100});
-  insist(!rules.some(rule => rule.type === 'workflows'),
-    'Required-workflow rules need manual verification');
+  await checkRules(github, params, rules, method);
   const required = rules.filter(rule => rule.type === 'required_status_checks')
     .flatMap(rule => rule.parameters.required_status_checks)
     .map(check => ({context: check.context, app: check.integration_id}));
@@ -155,8 +205,8 @@ function checkCi({checks, statuses, runs, required, headSha, mergeSha}) {
   }
 }
 
-async function inspectCi(github, params, pr) {
-  const required = await requirements(github, params, pr.base.ref);
+async function inspectCi(github, params, pr, method) {
+  const required = await requirements(github, params, pr.base.ref, method);
   const checks = [], statuses = [], runs = [];
   const refs = [pr.head.sha];
   if (pr.merge_commit_sha) {
@@ -207,13 +257,13 @@ async function run({github, core, repo, pr}) {
   const {data: pull} = await github.rest.pulls.get(params);
   checkPr(pull, params);
   const files = await checkChanges(github, params, pull);
-  await inspectCi(github, params, pull);
-  await unchangedPr(github, params, pull);
-  checkPurpose(await propertyValues());
   // Prefer squash, respecting repositories that disable it or require linear history.
   const method = repository.allow_squash_merge ? 'squash' :
     repository.allow_rebase_merge ? 'rebase' : repository.allow_merge_commit ? 'merge' : null;
   insist(method, 'No merge method is enabled');
+  await inspectCi(github, params, pull, method);
+  await unchangedPr(github, params, pull);
+  checkPurpose(await propertyValues());
   // The qualification comment commits us to the merge request; finish every check before posting.
   await github.rest.issues.createComment({...params, issue_number: params.pull_number,
     body: `This PR qualifies for auto-merge: repository purpose is \`${purpose}\`, ` +

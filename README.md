@@ -32,9 +32,16 @@ Eligibility is checked independently of the PR's title or author:
   on the test-merge commit when it has eligible CI results, otherwise on the head.
   Results from different commits cannot combine to satisfy requirements. Missing,
   pending, failed, or all-skipped CI does not qualify. Only the review status
-  `code-review/reviewable` is excluded. Required-workflow rules need manual review.
+  `code-review/reviewable` is excluded.
   A successful commit status alone counts as CI evidence only when branch policy
   explicitly requires that context without an app restriction.
+- Unsupported ruleset requirements, including deployments, code scanning, merge
+  queues, required workflows, and strict up-to-date policies, require manual handling
+  unless GitHub confirms that the token can bypass that specific ruleset. The workflow
+  checks `current_user_can_bypass` using the repository-level ruleset API, including
+  inherited rulesets. Errors identify the rule type, ruleset name, and ID before the
+  qualification comment is posted. Bypass permissions do not waive this workflow's
+  own lockfile or CI eligibility checks.
 
 New transitive packages and removed registry entries are allowed; target CI verifies
 installability and runtime compatibility. The validator compares lockfile transitions;

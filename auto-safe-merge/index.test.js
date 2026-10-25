@@ -33,7 +33,7 @@ function fixture() {
   const github = {rest: {
     users: {getAuthenticated: endpoint('actor', () => ({login: state.actor}))},
     repos: {
-      get: endpoint('repo', () => ({allow_squash_merge: true})),
+      get: endpoint('repo', () => ({allow_squash_merge: true, ...state.repository})),
       compareCommitsWithBasehead: endpoint('compare', () => (
         {merge_base_commit: {sha: 'ancestor'}})),
       getBranchProtection: endpoint('protection', () => {
@@ -84,7 +84,18 @@ function fixture() {
       return {};
     })},
   },
-  request: endpoint('properties', () => [{property_name: 'purpose', value: state.purpose}]),
+  request: async (route, args) => {
+    if (route === 'GET /repos/{owner}/{repo}/rulesets/{ruleset_id}') {
+      calls.push({name: 'ruleset', args});
+      assert.equal(args.includes_parents, true);
+      if (state.rulesetError) throw state.rulesetError;
+      return {data: state.rulesets?.[args.ruleset_id] ||
+        {name: 'Extra gate', current_user_can_bypass: 'never'}};
+    }
+    assert.equal(route, 'GET /repos/{owner}/{repo}/properties/values');
+    calls.push({name: 'properties', args});
+    return {data: [{property_name: 'purpose', value: state.purpose}]};
+  },
   paginate: async (method, args) => {
     assert.equal(args.per_page, 100);
     return typeof method === 'string' ? state.required : (await method(args)).data;
@@ -256,6 +267,128 @@ test('unprotected branch is accepted only on the explicit API response', async (
     {status: 404, response: {data: {message: 'Branch not protected'}}});
   await f.execute();
   assert.equal(f.state.merged, true);
+});
+
+for (const type of ['required_deployments', 'code_scanning', 'workflows', 'merge_queue',
+  'required_signatures', 'commit_message_pattern', 'future_merge_gate']) {
+  test(`unsupported ${type} reports its ruleset before commenting or merging`, async () => {
+    const f = fixture();
+    f.state.required.push({type, ruleset_id: 42});
+    await assert.rejects(f.execute(), error => {
+      assert.ok(error.message.includes(type));
+      assert.match(error.message, /Extra gate.*#42.*reviewable-ops cannot bypass/);
+      return true;
+    });
+    assert.equal(f.state.comment, false);
+    assert.equal(f.state.merged, false);
+  });
+}
+
+for (const bypass of ['always', 'pull_requests_only', 'exempt']) {
+  test(`GitHub-confirmed ${bypass} bypass permits unsupported rules`, async () => {
+    const f = fixture();
+    f.state.required.push({type: 'required_deployments', ruleset_id: 42},
+      {type: 'code_scanning', ruleset_id: 42});
+    f.state.rulesets = {42: {name: 'Extra gates', current_user_can_bypass: bypass}};
+    await f.execute();
+    assert.equal(f.state.merged, true);
+    assert.equal(f.calls.filter(call => call.name === 'ruleset').length, 1);
+  });
+}
+
+for (const bypass of [undefined, 'unrecognized']) {
+  test(`missing or unknown bypass permission (${bypass}) requires manual handling`, async () => {
+    const f = fixture();
+    f.state.required.push({type: 'required_deployments', ruleset_id: 42});
+    f.state.rulesets = {42: {name: 'Extra gate', current_user_can_bypass: bypass}};
+    await assert.rejects(f.execute(),
+      /required_deployments.*Extra gate.*#42.*permission is unknown/);
+    assert.equal(f.state.comment, false);
+    assert.equal(f.state.merged, false);
+  });
+}
+
+test('bypass permission for one ruleset does not apply to another', async () => {
+  const f = fixture();
+  f.state.required.push({type: 'required_deployments', ruleset_id: 42},
+    {type: 'code_scanning', ruleset_id: 43});
+  f.state.rulesets = {42: {name: 'Bypassed gate', current_user_can_bypass: 'always'}};
+  await assert.rejects(f.execute(), /code_scanning.*#43.*cannot bypass/);
+  assert.equal(f.state.comment, false);
+  assert.equal(f.state.merged, false);
+});
+
+test('unreadable ruleset produces a contextual error before commenting or merging', async () => {
+  const f = fixture();
+  f.state.required.push({type: 'code_scanning', ruleset_id: 42});
+  f.state.rulesetError = Object.assign(new Error('Forbidden'), {status: 403});
+  await assert.rejects(f.execute(), /Cannot read ruleset #42 for code_scanning: Forbidden/);
+  assert.equal(f.state.comment, false);
+  assert.equal(f.state.merged, false);
+});
+
+test('an unsupported rule without a ruleset ID cannot be silently ignored', async () => {
+  const f = fixture();
+  f.state.required.push({type: 'code_scanning'});
+  await assert.rejects(f.execute(), /Cannot identify ruleset.*code_scanning/);
+  assert.equal(f.state.comment, false);
+  assert.equal(f.state.merged, false);
+});
+
+test('ruleset bypass does not bypass the workflow CI requirement', async () => {
+  const f = fixture();
+  f.state.required.push({type: 'workflows', ruleset_id: 42});
+  f.state.rulesets = {42: {name: 'Bypassed workflow', current_user_can_bypass: 'exempt'}};
+  f.state.checks[0].conclusion = 'failure';
+  await assert.rejects(f.execute(), /CI check/);
+  assert.equal(f.state.comment, false);
+  assert.equal(f.state.merged, false);
+});
+
+test('rules satisfied by a normal squash PR merge need no bypass lookup', async () => {
+  const f = fixture();
+  f.state.required.push(...['creation', 'deletion', 'non_fast_forward', 'required_linear_history']
+    .map(type => ({type, ruleset_id: 42})));
+  f.state.required.push({type: 'pull_request', ruleset_id: 43, parameters: {
+    required_approving_review_count: 0, required_reviewers: [], dismiss_stale_reviews_on_push: true,
+    require_code_owner_review: false, require_last_push_approval: false,
+    required_review_thread_resolution: false,
+    require_extra_approval_for_unattributed_changes: false,
+    allowed_merge_methods: ['squash', 'rebase'],
+  }});
+  await f.execute();
+  assert.equal(f.state.merged, true);
+  assert.equal(f.calls.some(call => call.name === 'ruleset'), false);
+});
+
+for (const parameters of [{required_approving_review_count: 1},
+  {required_review_thread_resolution: true}, {allowed_merge_methods: ['rebase']},
+  {future_review_gate: true}]) {
+  test(`PR constraint ${Object.keys(parameters)[0]} requires manual review`, async () => {
+    const f = fixture();
+    f.state.required.push({type: 'pull_request', ruleset_id: 42, parameters});
+    await assert.rejects(f.execute(), /pull_request.*#42.*cannot bypass/);
+    assert.equal(f.state.comment, false);
+    assert.equal(f.state.merged, false);
+  });
+}
+
+test('linear history blocks a merge-commit-only repository before commenting', async () => {
+  const f = fixture();
+  f.state.repository = {allow_squash_merge: false, allow_merge_commit: true};
+  f.state.required.push({type: 'required_linear_history', ruleset_id: 42});
+  await assert.rejects(f.execute(), /required_linear_history.*#42.*cannot bypass/);
+  assert.equal(f.state.comment, false);
+  assert.equal(f.state.merged, false);
+});
+
+test('strict up-to-date policy requires manual verification', async () => {
+  const f = fixture();
+  f.state.required[0].ruleset_id = 42;
+  f.state.required[0].parameters.strict_required_status_checks_policy = true;
+  await assert.rejects(f.execute(), /required_status_checks.*#42.*cannot bypass/);
+  assert.equal(f.state.comment, false);
+  assert.equal(f.state.merged, false);
 });
 
 test('non-breaking lockfile deduplication does not require a version bump', async () => {
