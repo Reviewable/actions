@@ -28,8 +28,10 @@ function fixture() {
   }, {endpointName: name});
   const tree = sha => [
     {path: 'nested', type: 'tree', mode: '040000', sha: `directory-${sha}`},
-    {path: 'nested/yarn.lock', type: 'blob', mode: state.mode || '100644',
+    {path: state.lockfile || 'nested/yarn.lock', type: 'blob', mode: state.mode || '100644',
       sha: sha === 'ancestor' ? 'old-blob' : 'new-blob', size: 200},
+    ...(state.manifest ? [{path: 'nested/package.json', type: 'blob',
+      mode: state.manifestMode || '100644', sha: 'manifest-blob', size: 200}] : []),
   ];
   const github = {rest: {
     users: {getAuthenticated: endpoint('actor', () => ({login: state.actor}))},
@@ -68,6 +70,11 @@ function fixture() {
       getTree: endpoint('tree', args => (
         {tree: tree(args.tree_sha), truncated: Boolean(state.truncated)})),
       getBlob: endpoint('blob', args => {
+        const contents = args.file_sha === 'manifest-blob' ? JSON.stringify(state.manifest) :
+          state.blobs?.[args.file_sha];
+        if (contents) {
+          return {encoding: 'base64', content: Buffer.from(contents).toString('base64')};
+        }
         const version = args.file_sha === 'old-blob' ? '1.20.8' : state.version;
         const text = `# yarn lockfile v1\n\n"body-parser@^1.20.0":\n  version "${version}"\n` +
           `  resolved "https://registry.npmjs.org/body-parser/-/body-parser-${version}.tgz"\n`;
@@ -126,6 +133,50 @@ function fixture() {
   };
   return {state, calls, execute: () => run({github, core, repo: 'Reviewable/example', pr: '12'})};
 }
+
+function npmFixture(format, filename, range) {
+  const f = fixture();
+  f.state.lockfile = `nested/${filename}`;
+  f.state.files = [{filename: f.state.lockfile, status: 'modified'}];
+  f.state.manifest = {dependencies: {a: range}};
+  const lock = version => {
+    const entry = {version, resolved: `https://registry.npmjs.org/a/-/a-${version}.tgz`};
+    return JSON.stringify({lockfileVersion: format, ...(format === 1 ? {dependencies: {a: entry}} :
+      {packages: {'node_modules/a': entry}})});
+  };
+  f.state.blobs = {'old-blob': lock('1.0.0'), 'new-blob': lock('1.0.1')};
+  return f;
+}
+
+for (const format of [1, 2, 3]) {
+  for (const filename of ['package-lock.json', 'npm-shrinkwrap.json']) {
+    test(`npm v${format} ${filename} checks the manifest before comment or merge`, async () => {
+      const f = npmFixture(format, filename, '1.0.0');
+      await assert.rejects(f.execute(), /Resolution violates dependency range: package.json -> a/);
+      assert.ok(f.calls.some(call => (
+        call.name === 'blob' && call.args.file_sha === 'manifest-blob')));
+      assert.equal(f.state.comment, false);
+      assert.equal(f.state.merged, false);
+    });
+  }
+}
+
+test('a compatible npm resolution satisfying its manifest can qualify', async () => {
+  const f = npmFixture(3, 'package-lock.json', '^1.0.0');
+  await f.execute();
+  assert.equal(f.state.merged, true);
+});
+
+test('npm range verification refuses missing and symlinked manifests', async () => {
+  for (const manifestMode of [undefined, '120000']) {
+    const f = npmFixture(1, 'package-lock.json', '^1.0.0');
+    f.state.manifestMode = manifestMode;
+    if (!manifestMode) delete f.state.manifest;
+    await assert.rejects(f.execute(), /Not a regular package manifest: nested\/package.json/);
+    assert.equal(f.state.comment, false);
+    assert.equal(f.state.merged, false);
+  }
+});
 
 test('only explicit Reviewable repo names and positive PR numbers are accepted', () => {
   assert.equal(target('reviewable/a', '12').pull_number, 12);

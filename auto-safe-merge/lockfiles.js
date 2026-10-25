@@ -52,10 +52,11 @@ function yarnEntries(text) {
         registry = registryTarball(value.resolved, name, value.version);
       }
       entries.set(descriptor, {name, version: value.version, registry, value,
+        requestedName: match[1], requestedRange: match[2],
         artifact: [value.resolution, value.resolved, value.integrity, value.checksum]});
     }
   }
-  return {entries, metadata: data.__metadata || {format: 'yarn-v1'},
+  return {entries, yarn: true, metadata: data.__metadata || {format: 'yarn-v1'},
     resolve: (_key, name, range) => entries.get(`${name}@${range}`) ||
       entries.get(`${name}@npm:${range}`)};
 }
@@ -109,14 +110,45 @@ function npmEntries(text) {
       npmEntries(JSON.stringify({...metadata, lockfileVersion: 1, dependencies})) : null};
 }
 
+function dependencyRanges(value, resolver) {
+  return resolver === 'resolvePeer' ? value.peerDependencies || {} :
+    {...value.devDependencies, ...value.requires, ...value.dependencies,
+      ...value.optionalDependencies};
+}
+
+function checkRange(child, name, spec, label, yarn) {
+  // Unchanged workspace, Git and other non-registry entries are checked separately.
+  if (!child.registry) return;
+  let range = spec;
+  if (typeof range === 'string' && range.startsWith('npm:')) {
+    const alias = range.match(/^npm:(@[^/]+\/[^@]+|[^@]+)@(.+)$/);
+    if (alias) [name, range] = alias.slice(1);
+    else if (yarn) range = range.slice(4);
+  }
+  insist(typeof range === 'string' && semver.validRange(range) !== null,
+    `Cannot verify dependency range: ${label} (${spec}); verify and merge manually`);
+  insist(child.name === name && semver.satisfies(child.version, range),
+    `Resolution violates dependency range: ${label} (${child.name}@${child.version}, ${spec})`);
+}
+
+function checkRanges(graph, key, value) {
+  for (const resolver of ['resolve', 'resolvePeer']) {
+    if (!graph[resolver]) continue;
+    for (const [name, range] of Object.entries(dependencyRanges(value, resolver))) {
+      const child = graph[resolver](key, name, range);
+      // Only validate installed resolutions; optional/platform dependencies may be absent.
+      if (child) checkRange(child, name, range, `${key || 'package.json'} -> ${name}`, graph.yarn);
+    }
+  }
+}
+
 function checkEdges(before, after, oldKey, newKey) {
   const previous = before.entries.get(oldKey), next = after.entries.get(newKey);
   for (const resolver of ['resolve', 'resolvePeer']) {
     // Yarn lock descriptors do not encode the ancestor supplying a peer dependency.
     if (!before[resolver] || !after[resolver]) continue;
-    const dependencies = value => resolver === 'resolvePeer' ? value.peerDependencies || {} :
-      {...value.requires, ...value.dependencies, ...value.optionalDependencies};
-    const oldDeps = dependencies(previous.value), newDeps = dependencies(next.value);
+    const oldDeps = dependencyRanges(previous.value, resolver);
+    const newDeps = dependencyRanges(next.value, resolver);
     for (const name of Object.keys(oldDeps)) {
       if (!Object.hasOwn(newDeps, name)) continue;
       const oldChild = before[resolver](oldKey, name, oldDeps[name]);
@@ -176,13 +208,28 @@ function checkEntries(before, after) {
     insist(before.legacy && after.legacy, 'npm legacy dependency data removed or added');
     checkEntries(before.legacy, after.legacy);
   }
+  for (const [key, entry] of after.entries) {
+    if (after.yarn) checkRange(entry, entry.requestedName, entry.requestedRange, key, true);
+    checkRanges(after, key, entry.value);
+  }
   return upgrades;
 }
 
-function checkLockfile(filename, before, after) {
+function checkLockfile(filename, before, after, manifest) {
   insist(LOCKFILES.has(path.basename(filename)), `Not a supported lockfile: ${filename}`);
   const parse = path.basename(filename) === 'yarn.lock' ? yarnEntries : npmEntries;
-  return checkEntries(parse(before), parse(after));
+  const next = parse(after);
+  const upgrades = checkEntries(parse(before), next);
+  if (!next.yarn) {
+    insist(manifest && typeof manifest === 'object' && !Array.isArray(manifest),
+      'Missing adjacent package.json for npm dependency range validation');
+    insist(!Object.keys(manifest.overrides || {}).length,
+      'npm overrides require manual dependency range verification');
+    // npm v1 does not record the root's dependency ranges in the lockfile.
+    checkRanges(next, '', manifest);
+    if (next.legacy) checkRanges(next.legacy, '', manifest);
+  }
+  return upgrades;
 }
 
 module.exports = {LOCKFILES, insist, compatible, checkLockfile};

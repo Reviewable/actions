@@ -3,7 +3,11 @@
 const {test} = require('node:test');
 const assert = require('node:assert/strict');
 const {parseSyml, stringifySyml} = require('@yarnpkg/parsers');
-const {compatible, checkLockfile} = require('./lockfiles');
+const {compatible, checkLockfile: validateLockfile} = require('./lockfiles');
+
+// Most fixtures exercise transitive entries only, with no root dependencies.
+const checkLockfile = (filename, before, after, manifest = {}) =>
+  validateLockfile(filename, before, after, manifest);
 
 const npmEntry = (name, version, extra = {}) => ({version,
   resolved: `https://registry.npmjs.org/${name}/-/${name.split('/').pop()}-${version}.tgz`,
@@ -361,4 +365,141 @@ test('regrouping existing Yarn descriptors preserves the entry set', () => {
   });
   const after = berry({'a@npm:^1.0.0, a@npm:^1.1.0': yarnEntry('a', '1.2.0')});
   assert.equal(checkLockfile('yarn.lock', before, after), 2);
+});
+
+for (const modern of [false, true]) {
+  for (const range of ['1.20.8', '>=1.20.0 <1.20.9', '~1.19.0 || 1.20.8']) {
+    test(`Yarn ${modern ? 'modern' : 'Classic'} enforces descriptor range ${range}`, () => {
+      const lock = version => modern ?
+        berry({[`body-parser@npm:${range}`]: yarnEntry('body-parser', version)}) :
+        classic(version).replace('^1.20.0', range);
+      assert.throws(() => checkLockfile('yarn.lock', lock('1.20.8'), lock('1.20.9')),
+        /Resolution violates dependency range/);
+    });
+  }
+
+  test(`Yarn ${modern ? 'modern' : 'Classic'} validates aliases`, () => {
+    const lock = (version, range) => modern ?
+      berry({[`alias@npm:@scope/original@${range}`]: yarnEntry('@scope/original', version)}) :
+      `# yarn lockfile v1\n\n"alias@npm:@scope/original@${range}":\n  version "${version}"\n` +
+      `  resolved "https://registry.npmjs.org/@scope/original/-/original-${version}.tgz"\n`;
+    assert.equal(checkLockfile('yarn.lock', lock('1.0.0', '^1.0.0'), lock('1.1.0', '^1.0.0')), 1);
+    assert.throws(() => checkLockfile('yarn.lock', lock('1.0.0', '1.0.0'), lock('1.1.0', '1.0.0')),
+      /Resolution violates dependency range/);
+  });
+}
+
+test('every descriptor in a grouped Yarn entry must allow the new version', () => {
+  const lock = version => berry({'a@npm:^1.0.0, a@npm:1.0.0': yarnEntry('a', version)});
+  assert.throws(() => checkLockfile('yarn.lock', lock('1.0.0'), lock('1.0.1')),
+    /Resolution violates dependency range: a@npm:1.0.0/);
+});
+
+test('Yarn cannot resolve a descriptor to a different registry package', () => {
+  const lock = version => berry({'alias@npm:^1.0.0': yarnEntry('original', version)});
+  assert.throws(() => checkLockfile('yarn.lock', lock('1.0.0'), lock('1.1.0')),
+    /Resolution violates dependency range/);
+});
+
+for (const format of [1, 2, 3]) {
+  for (const field of [
+    'dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
+    test(`npm v${format} checks direct ${field} against the adjacent manifest`, () => {
+      const lock = version => format === 1 ? npmLock(1, {a: npmEntry('a', version)}) :
+        npmLock(format, {'node_modules/a': npmEntry('a', version)});
+      const before = lock('1.0.0'), after = lock('1.0.1');
+      assert.throws(
+        () => checkLockfile('package-lock.json', before, after, {[field]: {a: '1.0.0'}}),
+        /Resolution violates dependency range: package.json -> a/);
+      assert.equal(checkLockfile('package-lock.json', before, after, {[field]: {a: '^1.0.0'}}), 1);
+    });
+  }
+
+  test(`npm v${format} validates alias identity and range`, () => {
+    const lock = version => {
+      const entry = npmEntry('@scope/real', version,
+        format === 1 ? {version: `npm:@scope/real@${version}`} : {name: '@scope/real'});
+      return format === 1 ? npmLock(1, {alias: entry}) :
+        npmLock(format, {'node_modules/alias': entry});
+    };
+    const before = lock('1.0.0'), after = lock('1.0.1');
+    assert.equal(checkLockfile('package-lock.json', before, after,
+      {dependencies: {alias: 'npm:@scope/real@^1.0.0'}}), 1);
+    for (const spec of ['npm:@scope/real@1.0.0', 'npm:other@^1.0.0', '^1.0.0']) {
+      assert.throws(() => checkLockfile('package-lock.json', before, after,
+        {dependencies: {alias: spec}}), /Resolution violates dependency range/);
+    }
+  });
+
+  test(`npm v${format} checks transitive ranges at the installed child path`, () => {
+    const lock = version => {
+      const child = npmEntry('child', version);
+      return format === 1 ? npmLock(1, {
+        parent: npmEntry('parent', '1.0.0', {requires: {child: '1.0.0'}, dependencies: {child}}),
+        child: npmEntry('child', '1.0.0'),
+      }) : npmLock(format, {
+        'node_modules/parent': npmEntry('parent', '1.0.0', {dependencies: {child: '1.0.0'}}),
+        'node_modules/parent/node_modules/child': child,
+        'node_modules/child': npmEntry('child', '1.0.0'),
+      });
+    };
+    assert.throws(() => checkLockfile('package-lock.json', lock('1.0.0'), lock('1.0.1')),
+      /Resolution violates dependency range: node_modules\/parent -> child/);
+  });
+}
+
+for (const field of ['dependencies', 'optionalDependencies', 'peerDependencies']) {
+  test(`npm validates new ${field} ranges with an unchanged child version`, () => {
+    const lock = (version, range) => npmLock(3, {
+      'node_modules/parent': npmEntry('parent', version, {[field]: {child: range}}),
+      'node_modules/child': npmEntry('child', '1.1.0'),
+      // A matching nested copy must not mask the incompatible ancestor peer.
+      ...(field === 'peerDependencies' ?
+        {'node_modules/parent/node_modules/child': npmEntry('child', '1.0.0')} : {}),
+    });
+    assert.throws(() => checkLockfile('package-lock.json',
+      lock('1.0.0', '^1.0.0'), lock('1.0.1', '1.0.0')),
+    /Resolution violates dependency range/);
+  });
+}
+
+test('a newly added npm edge cannot reference an existing incompatible resolution', () => {
+  const lock = (version, dependencies) => npmLock(3, {
+    'node_modules/parent': npmEntry('parent', version, {dependencies}),
+    'node_modules/child': npmEntry('child', '1.1.0'),
+  });
+  assert.throws(() => checkLockfile('package-lock.json',
+    lock('1.0.0', {}), lock('1.0.1', {child: '1.0.0'})), /Resolution violates dependency range/);
+});
+
+test('npm optional ranges override ordinary ranges, with absent optionals allowed', () => {
+  const lock = version => npmLock(3, {'node_modules/a': npmEntry('a', version)});
+  assert.equal(checkLockfile('package-lock.json', lock('1.0.0'), lock('1.0.1'),
+    {dependencies: {a: '1.0.0'}, optionalDependencies: {a: '^1.0.0', missing: '1.0.0'}}), 1);
+});
+
+test('npm v2 legacy resolutions must also satisfy root and transitive ranges', () => {
+  const packages = {'node_modules/a': npmEntry('a', '1.0.0')};
+  const before = npmLock(2, packages, {a: npmEntry('a', '1.0.0')});
+  const after = npmLock(2, packages, {a: npmEntry('a', '1.0.1')});
+  assert.throws(() => checkLockfile('package-lock.json', before, after,
+    {dependencies: {a: '1.0.0'}}), /Resolution violates dependency range/);
+  const parent = npmEntry('parent', '1.0.0', {requires: {a: '1.0.0'}});
+  assert.throws(() => checkLockfile('package-lock.json',
+    npmLock(2, packages, {parent, a: npmEntry('a', '1.0.0')}),
+    npmLock(2, packages, {parent, a: npmEntry('a', '1.0.1')})),
+  /Resolution violates dependency range/);
+});
+
+test('registry tags, missing npm manifests and npm overrides require manual verification', () => {
+  const yarn = version => berry({'a@npm:latest': yarnEntry('a', version)});
+  assert.throws(() => checkLockfile('yarn.lock', yarn('1.0.0'), yarn('1.0.1')),
+    /Cannot verify dependency range/);
+  const npm = version => npmLock(3, {'node_modules/a': npmEntry('a', version)});
+  assert.throws(() => checkLockfile('package-lock.json', npm('1.0.0'), npm('1.0.1'),
+    {dependencies: {a: 'latest'}}), /Cannot verify dependency range/);
+  assert.throws(() => validateLockfile('package-lock.json', npm('1.0.0'), npm('1.0.1')),
+    /Missing adjacent package.json/);
+  assert.throws(() => checkLockfile('package-lock.json', npm('1.0.0'), npm('1.0.1'),
+    {overrides: {a: '1.0.0'}}), /npm overrides require manual/);
 });

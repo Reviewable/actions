@@ -52,10 +52,10 @@ async function readTree(github, params, sha) {
   return new Map(data.tree.map(entry => [entry.path, entry]));
 }
 
-async function readLockfile(github, params, tree, filename) {
+async function readFile(github, params, tree, filename, kind) {
   const entry = tree.get(filename);
-  insist(entry?.type === 'blob' && entry.mode === '100644', `Not a regular lockfile: ${filename}`);
-  insist(entry.size > 0 && entry.size <= 5 * 1024 * 1024, `Unsupported lockfile size: ${filename}`);
+  insist(entry?.type === 'blob' && entry.mode === '100644', `Not a regular ${kind}: ${filename}`);
+  insist(entry.size > 0 && entry.size <= 5 * 1024 * 1024, `Unsupported ${kind} size: ${filename}`);
   const {data} = await github.rest.git.getBlob({...params, file_sha: entry.sha});
   insist(data.encoding === 'base64', `Unexpected blob encoding: ${filename}`);
   return Buffer.from(data.content, 'base64').toString('utf8');
@@ -87,9 +87,12 @@ async function checkChanges(github, params, pr) {
       changed.every(name => files.some(file => file.filename === name)),
     'PR file list does not match the inspected commit trees');
   for (const file of files) {
-    const before = await readLockfile(github, params, beforeTree, file.filename);
-    const after = await readLockfile(github, params, afterTree, file.filename);
-    checkLockfile(file.filename, before, after);
+    const before = await readFile(github, params, beforeTree, file.filename, 'lockfile');
+    const after = await readFile(github, params, afterTree, file.filename, 'lockfile');
+    const manifest = path.basename(file.filename) === 'yarn.lock' ? undefined :
+      JSON.parse(await readFile(github, params, afterTree,
+        path.join(path.dirname(file.filename), 'package.json'), 'package manifest'));
+    checkLockfile(file.filename, before, after, manifest);
   }
   return files.map(file => file.filename);
 }

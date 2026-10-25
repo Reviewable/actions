@@ -33,6 +33,11 @@ Eligibility is checked independently of the PR's title:
   review, including executable/dependency metadata. The `dev`, `peer`, `optional`,
   and `devOptional` installation flags must stay unchanged even across version upgrades,
   including npm v2 legacy dependency data.
+- Registry resolutions satisfy their Yarn descriptors and installed npm dependency
+  ranges, including aliases, optional dependencies, and npm peers. Npm direct ranges
+  are also checked against the adjacent `package.json` from the inspected commit,
+  including dev dependencies and npm v1 lockfiles. Registry tags, unsupported range
+  syntax, and npm `overrides` require manual verification.
 - No package entries are added or removed. Parsed npm paths and Yarn descriptors
   must stay the same, including duplicate copies and npm v2 legacy dependency data.
   Relocation, deduplication that removes entries, and descriptor additions/removals
