@@ -214,6 +214,35 @@ test('unchanged installation flags permit version updates but not relocation', (
   }
 });
 
+for (const format of [1, 2, 3]) {
+  for (const flag of ['dev', 'peer', 'optional', 'devOptional']) {
+    test(`npm v${format} upgrades must preserve the ${flag} installation flag`, () => {
+      const lock = (version, value) => {
+        const entry = npmEntry('a', version, {[flag]: value, hasInstallScript: true});
+        return format === 1 ? npmLock(1, {a: entry}) :
+          npmLock(format, {'node_modules/a': entry}, format === 2 ? {a: entry} : undefined);
+      };
+      for (const [before, after] of [[true, false], [true, undefined], [undefined, true]]) {
+        assert.throws(() => checkLockfile('package-lock.json',
+          lock('1.0.0', before), lock('1.1.0', after)),
+        new RegExp(`Installation scope changed: .*${flag}`));
+      }
+      assert.equal(checkLockfile('package-lock.json', lock('1.0.0', true), lock('1.1.0', true)), 1);
+    });
+  }
+}
+
+test('npm v2 upgrades also preserve installation flags in legacy data', () => {
+  for (const flag of ['dev', 'peer', 'optional', 'devOptional']) {
+    const before = npmEntry('a', '1.0.0', {[flag]: true});
+    const after = npmEntry('a', '1.1.0', {[flag]: true});
+    assert.throws(() => checkLockfile('npm-shrinkwrap.json',
+      npmLock(2, {'node_modules/a': before}, {a: before}),
+      npmLock(2, {'node_modules/a': after}, {a: {...after, [flag]: undefined}})),
+    new RegExp(`Installation scope changed: .*${flag}`));
+  }
+});
+
 for (const extra of [{bin: {a: '../../other/bin.js'}}, {dependencies: {other: '^1.0.0'}}]) {
   test(`relocating an npm entry cannot change ${Object.keys(extra)[0]} metadata`, () => {
     const entry = npmEntry('a', '1.0.0');

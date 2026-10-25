@@ -26,8 +26,9 @@ Eligibility is checked independently of the PR's title or author:
   the same. Downgrades, prereleases, changed non-registry entries, artifact changes
   without a version change, and unverifiable lockfile migrations require manual review.
   Npm peer edges use ancestor resolution. Same-version metadata edits require manual
-  review, including executable/dependency metadata and the `dev`, `peer`, `optional`,
-  and `devOptional` installation flags.
+  review, including executable/dependency metadata. The `dev`, `peer`, `optional`,
+  and `devOptional` installation flags must stay unchanged even across version upgrades,
+  including npm v2 legacy dependency data.
 - No package entries are added or removed. Parsed npm paths and Yarn descriptors
   must stay the same, including duplicate copies and npm v2 legacy dependency data.
   Relocation, deduplication that removes entries, and descriptor additions/removals

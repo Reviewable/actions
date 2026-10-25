@@ -164,6 +164,11 @@ function checkEntries(before, after) {
     if (previous.version === next.version) {
       checkSameVersion(previous, next, key);
     } else {
+      // A compatible version change does not make installation-scope changes safe.
+      for (const flag of ['dev', 'peer', 'optional', 'devOptional']) {
+        insist(previous.value[flag] === next.value[flag],
+          `Installation scope changed: ${key} (${flag}); verify and merge manually`);
+      }
       upgrades++;
     }
   }
