@@ -9,6 +9,7 @@ function fixture() {
   const state = {
     purpose: 'tool', actor: 'reviewable-ops',
     pr: {state: 'open', merged: false, draft: false, mergeable: true, changed_files: 1,
+      user: {login: 'dependency-author'},
       head: {sha: 'head'},
       base: {sha: 'base', ref: 'master', repo: {full_name: 'Reviewable/example'}},
       merge_commit_sha: 'merge'},
@@ -32,6 +33,10 @@ function fixture() {
   ];
   const github = {rest: {
     users: {getAuthenticated: endpoint('actor', () => ({login: state.actor}))},
+    orgs: {getMembershipForUser: endpoint('membership', () => {
+      if (state.membershipError) throw state.membershipError;
+      return state.membership || {state: 'active', role: 'member'};
+    })},
     repos: {
       get: endpoint('repo', () => ({allow_squash_merge: true, ...state.repository})),
       compareCommitsWithBasehead: endpoint('compare', () => (
@@ -137,6 +142,61 @@ test('purpose is the exact custom property value, not a topic or partial match',
   }
   for (const value of ['production', 'tool,library', ['tool'], null]) {
     assert.throws(() => checkPurpose([{property_name: 'purpose', value}]));
+  }
+});
+
+for (const role of ['member', 'admin']) {
+  test(`an active organization ${role} author can qualify`, async () => {
+    const f = fixture();
+    f.state.membership = {state: 'active', role};
+    f.state.pr.author_association = 'NONE';
+    await f.execute();
+    const membershipIndex = f.calls.findIndex(call => call.name === 'membership');
+    assert.deepEqual(f.calls[membershipIndex].args,
+      {org: 'Reviewable', username: 'dependency-author'});
+    assert.ok(membershipIndex < f.calls.findIndex(call => call.name === 'files'));
+    assert.match(f.state.commentBody, /@dependency-author.*active member of Reviewable/);
+    assert.equal(f.state.merged, true);
+  });
+}
+
+for (const state of ['pending', undefined, 'unrecognized']) {
+  test(`an author with ${state} membership refuses before inspecting files or commenting`,
+    async () => {
+      const f = fixture();
+      f.state.membership = {state};
+      f.state.pr.author_association = 'MEMBER';
+      await assert.rejects(f.execute(), /PR author @dependency-author.*active member of Reviewable/);
+      assert.equal(f.calls.some(call => call.name === 'files'), false);
+      assert.equal(f.state.comment, false);
+      assert.equal(f.state.merged, false);
+    });
+}
+
+for (const status of [403, 404, 500]) {
+  test(`author membership lookup failure ${status} cannot qualify a collaborator`, async () => {
+    const f = fixture();
+    f.state.membershipError = Object.assign(new Error(`Membership lookup ${status}`), {status});
+    f.state.pr.author_association = 'COLLABORATOR';
+    await assert.rejects(f.execute(), error => {
+      assert.match(error.message, /Cannot verify Reviewable membership for PR author @dependency-author/);
+      assert.equal(error.cause.status, status);
+      return true;
+    });
+    assert.equal(f.calls.some(call => call.name === 'files'), false);
+    assert.equal(f.state.comment, false);
+    assert.equal(f.state.merged, false);
+  });
+}
+
+test('a missing PR author cannot qualify', async () => {
+  for (const user of [null, {login: ''}]) {
+    const f = fixture();
+    f.state.pr.user = user;
+    await assert.rejects(f.execute(), /PR author is unavailable/);
+    assert.equal(f.calls.some(call => call.name === 'membership' || call.name === 'files'), false);
+    assert.equal(f.state.comment, false);
+    assert.equal(f.state.merged, false);
   }
 });
 

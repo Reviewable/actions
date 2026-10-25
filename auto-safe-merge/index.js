@@ -23,6 +23,23 @@ function checkPr(pr, params) {
     'Mergeability is unknown or the PR has conflicts; retry once resolved');
 }
 
+async function checkAuthor(github, params, pr) {
+  const username = pr.user?.login;
+  insist(typeof username === 'string' && username.length > 0,
+    'PR author is unavailable; verify and merge manually');
+  let membership;
+  try {
+    ({data: membership} = await github.rest.orgs.getMembershipForUser({
+      org: params.owner, username}));
+  } catch (error) {
+    throw new Error(`Cannot verify ${params.owner} membership for PR author @${username}: ` +
+      error.message, {cause: error});
+  }
+  insist(membership?.state === 'active',
+    `PR author @${username} must be an active member of ${params.owner}; ` +
+      'verify and merge manually');
+}
+
 function checkPurpose(properties) {
   const purpose = properties.find(property => property.property_name === 'purpose')?.value;
   insist(purpose === 'tool' || purpose === 'library', 'Repository purpose must be tool or library');
@@ -305,6 +322,7 @@ async function run({github, core, repo, pr}) {
   const purpose = checkPurpose(await propertyValues());
   const {data: pull} = await github.rest.pulls.get(params);
   checkPr(pull, params);
+  await checkAuthor(github, params, pull);
   const files = await checkChanges(github, params, pull);
   // Prefer squash, respecting repositories that disable it or require linear history.
   const method = repository.allow_squash_merge ? 'squash' :
@@ -316,6 +334,7 @@ async function run({github, core, repo, pr}) {
   // The qualification comment commits us to the merge request; finish every check before posting.
   await github.rest.issues.createComment({...params, issue_number: params.pull_number,
     body: `This PR qualifies for auto-merge: repository purpose is \`${purpose}\`, ` +
+      `author @${pull.user.login} is an active member of ${params.owner}, ` +
       `only existing lockfiles changed (${files.map(file => `\`${file}\``).join(', ')}), ` +
       'all dependency version updates are non-breaking under semver (including 0.x), ' +
       'and CI passed.\n\n' +
