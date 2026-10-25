@@ -42,6 +42,12 @@ Eligibility is checked independently of the PR's title or author:
   inherited rulesets. Errors identify the rule type, ruleset name, and ID before the
   qualification comment is posted. Bypass permissions do not waive this workflow's
   own lockfile or CI eligibility checks.
+- Classic branch protections are assumed to apply to `reviewable-ops`, which is
+  neither a repository admin nor a custom-role bypass actor. Unsupported approval,
+  conversation-resolution, signature, push-restriction, branch-lock, strict-update,
+  or unknown protection settings stop the workflow before its qualification comment.
+  Linear history is supported with squash or rebase merges; required status checks
+  retain their context and app requirements.
 
 New transitive packages and removed registry entries are allowed; target CI verifies
 installability and runtime compatibility. The validator compares lockfile transitions;

@@ -127,6 +127,48 @@ async function checkRules(github, params, rules, method) {
   }
 }
 
+function checkProtection(protection, branch, method) {
+  const unsupported = requirement => {
+    throw new Error(`Unsupported classic branch protection ${requirement} on "${branch}". ` +
+      'Verify and merge manually.');
+  };
+  // reviewable-ops is neither an admin nor a custom-role bypass actor: every gate applies.
+  for (const [name, value] of Object.entries(protection)) {
+    if (value === null) continue;
+    switch (name) {
+      // Metadata and permissions unrelated to merging an existing PR.
+      case 'url': case 'enforce_admins': case 'allow_force_pushes': case 'allow_deletions':
+      case 'block_creations': case 'allow_fork_syncing': break;
+      case 'required_status_checks':
+        if (value.strict) unsupported(`${name}.strict`);
+        break;
+      case 'required_pull_request_reviews':
+        for (const [setting, enabled] of Object.entries(value)) {
+          switch (setting) {
+            case 'url': case 'dismissal_restrictions': case 'dismiss_stale_reviews':
+            case 'bypass_pull_request_allowances': break;
+            case 'required_approving_review_count':
+              if (enabled !== 0) unsupported(`${name}.${setting}`);
+              break;
+            case 'require_code_owner_reviews': case 'require_last_push_approval':
+              if (enabled !== false) unsupported(`${name}.${setting}`);
+              break;
+            default: unsupported(`${name}.${setting}`);
+          }
+        }
+        break;
+      case 'required_linear_history':
+        if (value.enabled && !['squash', 'rebase'].includes(method)) unsupported(name);
+        break;
+      case 'required_signatures': case 'required_conversation_resolution': case 'lock_branch':
+        if (value.enabled) unsupported(name);
+        break;
+      // Push restrictions and unknown protection fields need manual verification.
+      default: unsupported(name);
+    }
+  }
+}
+
 async function requirements(github, params, branch, method) {
   const rules = await github.paginate('GET /repos/{owner}/{repo}/rules/branches/{branch}',
     {...params, branch, per_page: 100});
@@ -136,6 +178,7 @@ async function requirements(github, params, branch, method) {
     .map(check => ({context: check.context, app: check.integration_id}));
   try {
     const {data} = await github.rest.repos.getBranchProtection({...params, branch});
+    checkProtection(data, branch, method);
     const legacy = data.required_status_checks;
     if (legacy) {
       required.push(...(legacy.checks || []).map(check => (

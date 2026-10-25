@@ -38,7 +38,7 @@ function fixture() {
         {merge_base_commit: {sha: 'ancestor'}})),
       getBranchProtection: endpoint('protection', () => {
         if (state.protectionError) throw state.protectionError;
-        return {};
+        return state.protection || {};
       }),
       listCommitStatusesForRef: endpoint('statuses', args => args.ref === 'head' ? state.statuses :
       state.mergeStatuses || []),
@@ -268,6 +268,83 @@ test('unprotected branch is accepted only on the explicit API response', async (
   await f.execute();
   assert.equal(f.state.merged, true);
 });
+
+for (const [name, protection] of [
+  ['required_pull_request_reviews.required_approving_review_count',
+    {required_pull_request_reviews: {required_approving_review_count: 1}}],
+  ['required_pull_request_reviews.require_code_owner_reviews',
+    {required_pull_request_reviews: {require_code_owner_reviews: true}}],
+  ['required_pull_request_reviews.require_last_push_approval',
+    {required_pull_request_reviews: {require_last_push_approval: true}}],
+  ['required_pull_request_reviews.future_review_gate',
+    {required_pull_request_reviews: {future_review_gate: true}}],
+  ['required_status_checks.strict', {required_status_checks: {strict: true}}],
+  ...['required_conversation_resolution', 'required_signatures', 'lock_branch',
+    'future_merge_gate'].map(name => [name, {[name]: {enabled: true}}]),
+  ['restrictions', {restrictions: {users: [], teams: [], apps: []}}],
+]) {
+  test(`classic ${name} refuses before commenting or merging`, async () => {
+    const f = fixture();
+    f.state.protection = {...protection, enforce_admins: {enabled: false}};
+    // A ruleset exemption does not waive classic protection.
+    f.state.required.push({type: 'pull_request', ruleset_id: 42,
+      parameters: {required_approving_review_count: 1}});
+    f.state.rulesets = {42: {name: 'Reviews', current_user_can_bypass: 'always'}};
+    await assert.rejects(f.execute(), error => {
+      assert.ok(error.message.includes(`classic branch protection ${name} on "master"`));
+      assert.match(error.message, /Verify and merge manually/);
+      return true;
+    });
+    assert.equal(f.state.comment, false);
+    assert.equal(f.state.merged, false);
+  });
+}
+
+for (const method of ['squash', 'rebase', 'merge']) {
+  test(`classic linear history checks the selected ${method} merge method`, async () => {
+    const f = fixture();
+    f.state.repository = {allow_squash_merge: method === 'squash',
+      allow_rebase_merge: method === 'rebase', allow_merge_commit: method === 'merge'};
+    f.state.protection = {required_linear_history: {enabled: true}};
+    if (method === 'merge') {
+      await assert.rejects(f.execute(), /classic branch protection required_linear_history/);
+      assert.equal(f.state.comment, false);
+      assert.equal(f.state.merged, false);
+    } else {
+      await f.execute();
+      assert.equal(f.calls.find(call => call.name === 'merge').args.merge_method, method);
+    }
+  });
+}
+
+test('supported classic protections retain required checks and allow a normal PR merge',
+  async () => {
+    const f = fixture();
+    f.state.required = [];
+    f.state.protection = {
+      url: 'protection', enforce_admins: {enabled: true},
+      allow_force_pushes: {enabled: false}, allow_deletions: {enabled: false},
+      block_creations: {enabled: true}, allow_fork_syncing: {enabled: false},
+      required_signatures: {enabled: false}, required_conversation_resolution: {enabled: false},
+      lock_branch: {enabled: false}, required_linear_history: {enabled: true}, restrictions: null,
+      required_status_checks: {strict: false, checks: [{context: 'Build', app_id: 123}],
+        contexts: ['Build', 'External CI', 'code-review/reviewable']},
+      required_pull_request_reviews: {url: 'reviews', required_approving_review_count: 0,
+        require_code_owner_reviews: false, require_last_push_approval: false,
+        dismiss_stale_reviews: true, dismissal_restrictions: {users: [], teams: [], apps: []},
+        bypass_pull_request_allowances: {users: [], teams: [], apps: []}},
+    };
+    await assert.rejects(f.execute(), /Required CI result missing or not successful: External CI/);
+    assert.equal(f.state.comment, false);
+    f.state.statuses.push({context: 'External CI', state: 'success'});
+    f.state.checks[0].app.id = 456;
+    await assert.rejects(f.execute(), /Required CI result missing or not successful: Build/);
+    assert.equal(f.state.comment, false);
+    f.state.checks[0].app.id = 123;
+    await f.execute();
+    assert.equal(f.state.merged, true);
+    assert.equal(f.calls.some(call => call.name === 'ruleset'), false);
+  });
 
 for (const type of ['required_deployments', 'code_scanning', 'workflows', 'merge_queue',
   'required_signatures', 'commit_message_pattern', 'future_merge_gate']) {
