@@ -91,40 +91,56 @@ function npmEntries(text) {
       add(key, name, value);
     }
   }
+  const parent = key => {
+    const index = key.lastIndexOf('/node_modules/');
+    return index < 0 ? '' : key.slice(0, index);
+  };
   const resolve = (key, name) => {
     let prefix = key;
     while (true) {
       const candidate = entries.get(`${prefix ? `${prefix}/` : ''}node_modules/${name}`);
       if (candidate) return candidate;
       if (!prefix) return undefined;
-      const index = prefix.lastIndexOf('/node_modules/');
-      prefix = index < 0 ? '' : prefix.slice(0, index);
+      prefix = parent(prefix);
     }
   };
-  return {entries, metadata, resolve, legacy: data.lockfileVersion === 2 && dependencies ?
-    npmEntries(JSON.stringify({...metadata, lockfileVersion: 1, dependencies})) : null};
+  return {entries, metadata, resolve, resolvePeer: (key, name) => resolve(parent(key), name),
+    legacy: data.lockfileVersion === 2 && dependencies ?
+      npmEntries(JSON.stringify({...metadata, lockfileVersion: 1, dependencies})) : null};
 }
 
 function checkEdges(before, after, oldKey, newKey) {
   const previous = before.entries.get(oldKey), next = after.entries.get(newKey);
-  const dependencies = value => (
-    {...value.requires, ...value.dependencies, ...value.optionalDependencies});
-  const oldDeps = dependencies(previous.value), newDeps = dependencies(next.value);
-  for (const name of Object.keys(oldDeps)) {
-    if (!Object.hasOwn(newDeps, name)) continue;
-    const oldChild = before.resolve(oldKey, name, oldDeps[name]);
-    const newChild = after.resolve(newKey, name, newDeps[name]);
-    // Optional/platform dependencies may be absent.
-    // New or removed packages have no version transition.
-    if (!oldChild || !newChild) continue;
-    insist(oldChild.name === newChild.name, `Dependency identity changed: ${newKey} -> ${name}`);
-    if (oldChild.version === newChild.version) continue;
-    insist(
-      oldChild.registry && newChild.registry &&
-        compatible(oldChild.version, newChild.version),
-      `Breaking dependency edge: ${newKey} -> ${name} ` +
-        `(${oldChild.version} -> ${newChild.version})`);
+  for (const resolver of ['resolve', 'resolvePeer']) {
+    // Yarn lock descriptors do not encode the ancestor supplying a peer dependency.
+    if (!before[resolver] || !after[resolver]) continue;
+    const dependencies = value => resolver === 'resolvePeer' ? value.peerDependencies || {} :
+      {...value.requires, ...value.dependencies, ...value.optionalDependencies};
+    const oldDeps = dependencies(previous.value), newDeps = dependencies(next.value);
+    for (const name of Object.keys(oldDeps)) {
+      if (!Object.hasOwn(newDeps, name)) continue;
+      const oldChild = before[resolver](oldKey, name, oldDeps[name]);
+      const newChild = after[resolver](newKey, name, newDeps[name]);
+      // Optional/platform dependencies may be absent.
+      // New or removed packages have no version transition; CI validates installation.
+      if (!oldChild || !newChild) continue;
+      insist(oldChild.name === newChild.name, `Dependency identity changed: ${newKey} -> ${name}`);
+      if (oldChild.version === newChild.version) continue;
+      insist(
+        oldChild.registry && newChild.registry &&
+          compatible(oldChild.version, newChild.version),
+        `Breaking dependency edge: ${newKey} -> ${name} ` +
+          `(${oldChild.version} -> ${newChild.version})`);
+    }
   }
+}
+
+function checkSameVersion(previous, next, key) {
+  insist(equal(previous.artifact, next.artifact),
+    `Artifact changed without a version update: ${key}`);
+  const metadata = ({dev, peer, ...rest}) => rest;
+  insist(equal(metadata(previous.value), metadata(next.value)),
+    `Package metadata changed without a version update: ${key}`);
 }
 
 function checkEntries(before, after) {
@@ -147,11 +163,7 @@ function checkEntries(before, after) {
           compatible(previous.version, next.version),
         `Breaking or unverified update: ${key} (${previous.version} -> ${next.version})`);
       if (previous.version === next.version) {
-        insist(equal(previous.artifact, next.artifact),
-          `Artifact changed without a version update: ${key}`);
-        const metadata = ({dev, optional, devOptional, peer, ...rest}) => rest;
-        insist(equal(metadata(previous.value), metadata(next.value)),
-          `Package metadata changed without a version update: ${key}`);
+        checkSameVersion(previous, next, key);
       } else {
         upgrades++;
       }
@@ -166,8 +178,7 @@ function checkEntries(before, after) {
       for (const old of compatibleCandidates) {
         checkEdges(before, after, old.key, key);
         if (old.version === next.version) {
-          insist(equal(old.artifact, next.artifact),
-            `Artifact changed for relocated entry: ${key}`);
+          checkSameVersion(old, next, key);
         }
       }
       if (candidates.length && !candidates.some(old => old.version === next.version)) upgrades++;

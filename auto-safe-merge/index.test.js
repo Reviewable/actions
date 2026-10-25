@@ -149,6 +149,10 @@ for (const [name, modify, error] of [
   ['pending CI', s => {s.checks[0].status = 'in_progress';}, /CI check/],
   ['no CI', s => {s.checks = []; s.runs = [];}, /No CI/],
   ['all skipped', s => {s.checks[0].conclusion = 'skipped';}, /only skipped/],
+  ['unrequired status only', s => {
+    s.checks = []; s.runs = []; s.required = [];
+    s.statuses.push({context: 'Looks good', state: 'success'});
+  }, /unrequired commit statuses/],
   ['wrong CI app', s => {s.checks[0].app.id = 456;}, /Required CI/],
   ['missing required check', s => {
     s.required[0].parameters.required_status_checks.push({context: 'Lint'});
@@ -232,7 +236,7 @@ test('a passing head status cannot hide a failed merge status without a SHA fiel
 });
 
 test('latest statuses/runs replace older failures but unrelated failures remain blocking', () => {
-  const data = {checks: [], required: [], statuses: [
+  const data = {checks: [], required: [{context: 'Build'}], statuses: [
     {sha: 'head', context: 'Build', state: 'success'},
     {sha: 'head', context: 'Build', state: 'failure'},
   ], runs: [
@@ -244,6 +248,18 @@ test('latest statuses/runs replace older failures but unrelated failures remain 
   assert.doesNotThrow(() => checkCi(data));
   data.statuses.push({sha: 'head', context: 'Lint', state: 'failure'});
   assert.throws(() => checkCi(data), /CI status/);
+});
+
+test('status-only CI must be explicitly required without an app restriction', () => {
+  const data = {checks: [], runs: [], statuses: [{context: 'External CI', state: 'success'}],
+    required: [{context: 'External CI'}]};
+  assert.doesNotThrow(() => checkCi(data));
+  data.required[0].app = -1;
+  assert.doesNotThrow(() => checkCi(data));
+  data.required[0].app = 123;
+  assert.throws(() => checkCi(data), /unrequired commit statuses/);
+  data.required = [{context: 'Different CI'}];
+  assert.throws(() => checkCi(data), /unrequired commit statuses/);
 });
 
 test('manual workflow checks cannot substitute for required PR CI', () => {

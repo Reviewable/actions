@@ -134,15 +134,16 @@ function checkCi({checks, statuses, runs, required}) {
     insist(workflow.status === 'completed' && workflow.conclusion === 'success',
       `CI workflow has not passed: ${workflow.name} (${workflow.status}/${workflow.conclusion})`);
   }
-  insist(checks.some(check => check.conclusion === 'success') || latest.size > 0,
-    'CI contains only skipped/neutral checks');
+  const requiredStatus = requirement => (!requirement.app || requirement.app === -1) &&
+    [...latest.values()].some(value => (
+      value.context === requirement.context && value.state === 'success'));
+  // A standalone status is CI evidence only when the repository's policy requires it.
+  insist(checks.some(check => check.conclusion === 'success') || required.some(requiredStatus),
+    'CI contains only skipped/neutral checks or unrequired commit statuses');
   for (const requirement of required) {
     const matches = checks.filter(check => check.name === requirement.context &&
       (!requirement.app || requirement.app === -1 || check.app?.id === requirement.app));
-    const status = (!requirement.app || requirement.app === -1) &&
-      [...latest.values()].some(value => (
-        value.context === requirement.context && value.state === 'success'));
-    insist(matches.some(check => check.conclusion === 'success') || status,
+    insist(matches.some(check => check.conclusion === 'success') || requiredStatus(requirement),
       `Required CI result missing or not successful: ${requirement.context}`);
   }
 }
