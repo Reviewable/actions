@@ -27,7 +27,12 @@ Eligibility is checked independently of the PR's title or author:
   without a version change, and unverifiable lockfile migrations require manual review.
   Npm peer edges use ancestor resolution. Same-version metadata edits require manual
   review, including executable/dependency metadata and the `dev`, `peer`, `optional`,
-  and `devOptional` installation flags, even for relocated entries.
+  and `devOptional` installation flags.
+- No package entries are added or removed. Parsed npm paths and Yarn descriptors
+  must stay the same, including duplicate copies and npm v2 legacy dependency data.
+  Relocation, deduplication that removes entries, and descriptor additions/removals
+  require manual review. Regrouping existing Yarn descriptors is allowed only when
+  it preserves the parsed entry set and passes the other checks.
 - Reported CI on the current head and any current test-merge commit has passed.
   Required checks from active rulesets and legacy branch protection must all pass
   on the test-merge commit when it has eligible CI results, otherwise on the head.
@@ -50,9 +55,8 @@ Eligibility is checked independently of the PR's title or author:
   Linear history is supported with squash or rebase merges; required status checks
   retain their context and app requirements.
 
-New transitive packages and removed registry entries are allowed; target CI verifies
-installability and runtime compatibility. The validator compares lockfile transitions;
-it does not authenticate new packages' metadata against the registry.
+Package additions and removals require manual review even when CI passes. The validator
+compares existing entries; it does not authenticate package metadata against the registry.
 
 The workflow reads target files as data through the GitHub API; it never checks
 out the target PR, installs its dependencies, or executes its scripts. It posts

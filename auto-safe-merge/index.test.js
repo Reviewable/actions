@@ -66,7 +66,9 @@ function fixture() {
         const version = args.file_sha === 'old-blob' ? '1.20.8' : state.version;
         const text = `# yarn lockfile v1\n\n"body-parser@^1.20.0":\n  version "${version}"\n` +
           `  resolved "https://registry.npmjs.org/body-parser/-/body-parser-${version}.tgz"\n`;
-        return {encoding: 'base64', content: Buffer.from(text).toString('base64')};
+        const extra = state.extraEntryOn === args.file_sha ? '\n"a@^1.0.0":\n' +
+          '  version "1.0.0"\n  resolved "https://registry.npmjs.org/a/-/a-1.0.0.tgz"\n' : '';
+        return {encoding: 'base64', content: Buffer.from(text + extra).toString('base64')};
       }),
       getCommit: endpoint('commit', () => (
         {parents: [{sha: state.staleMerge ? 'old-base' : 'base'}, {sha: 'head'}]})),
@@ -468,7 +470,17 @@ test('strict up-to-date policy requires manual verification', async () => {
   assert.equal(f.state.merged, false);
 });
 
-test('non-breaking lockfile deduplication does not require a version bump', async () => {
+for (const [blob, change] of [['old-blob', 'removed'], ['new-blob', 'added']]) {
+  test(`a package ${change} with passing CI refuses before commenting or merging`, async () => {
+    const f = fixture();
+    f.state.extraEntryOn = blob;
+    await assert.rejects(f.execute(), new RegExp(`Package entry ${change}`));
+    assert.equal(f.state.comment, false);
+    assert.equal(f.state.merged, false);
+  });
+}
+
+test('unchanged resolved versions do not require a version bump', async () => {
   const f = fixture();
   f.state.version = '1.20.8';
   await f.execute();

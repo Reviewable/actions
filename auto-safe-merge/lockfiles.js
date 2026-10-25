@@ -122,7 +122,6 @@ function checkEdges(before, after, oldKey, newKey) {
       const oldChild = before[resolver](oldKey, name, oldDeps[name]);
       const newChild = after[resolver](newKey, name, newDeps[name]);
       // Optional/platform dependencies may be absent.
-      // New or removed packages have no version transition; CI validates installation.
       if (!oldChild || !newChild) continue;
       insist(oldChild.name === newChild.name, `Dependency identity changed: ${newKey} -> ${name}`);
       if (oldChild.version === newChild.version) continue;
@@ -144,47 +143,29 @@ function checkSameVersion(previous, next, key) {
 
 function checkEntries(before, after) {
   insist(equal(before.metadata, after.metadata), 'Lockfile format or root metadata changed');
-  const byName = new Map();
-  for (const [key, entry] of before.entries) {
-    if (!byName.has(entry.name)) byName.set(entry.name, []);
-    byName.get(entry.name).push({...entry, key});
+  // Structural changes require manual review, including relocation and deduplication.
+  for (const key of before.entries.keys()) {
+    insist(after.entries.has(key), `Package entry removed: ${key}`);
+  }
+  for (const key of after.entries.keys()) {
+    insist(before.entries.has(key), `Package entry added: ${key}`);
   }
   let upgrades = 0;
   for (const [key, next] of after.entries) {
     const previous = before.entries.get(key);
-    if (previous) checkEdges(before, after, key, key);
-    if (previous && equal(previous.value, next.value)) continue;
+    checkEdges(before, after, key, key);
+    if (equal(previous.value, next.value)) continue;
     insist(next.registry && semver.valid(next.version) && !semver.prerelease(next.version),
       `Cannot establish a stable registry update for ${key}`);
-    if (previous) {
-      insist(
-        previous.registry && previous.name === next.name &&
-          compatible(previous.version, next.version),
-        `Breaking or unverified update: ${key} (${previous.version} -> ${next.version})`);
-      if (previous.version === next.version) {
-        checkSameVersion(previous, next, key);
-      } else {
-        upgrades++;
-      }
+    insist(
+      previous.registry && previous.name === next.name &&
+        compatible(previous.version, next.version),
+      `Breaking or unverified update: ${key} (${previous.version} -> ${next.version})`);
+    if (previous.version === next.version) {
+      checkSameVersion(previous, next, key);
     } else {
-      // Entries can move during hoisting/deduplication or change range descriptors.
-      // Never let a renamed descriptor disguise a new incompatible version line.
-      const candidates = byName.get(next.name) || [];
-      const compatibleCandidates = candidates.filter(old => (
-        old.registry && compatible(old.version, next.version)));
-      insist(!candidates.length || compatibleCandidates.length > 0,
-        `New incompatible version line: ${next.name}@${next.version}`);
-      for (const old of compatibleCandidates) {
-        checkEdges(before, after, old.key, key);
-        if (old.version === next.version) {
-          checkSameVersion(old, next, key);
-        }
-      }
-      if (candidates.length && !candidates.some(old => old.version === next.version)) upgrades++;
+      upgrades++;
     }
-  }
-  for (const [key, previous] of before.entries) {
-    insist(after.entries.has(key) || previous.registry, `Non-registry entry removed: ${key}`);
   }
   if (before.legacy || after.legacy) {
     insist(before.legacy && after.legacy, 'npm legacy dependency data removed or added');

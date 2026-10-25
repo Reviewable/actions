@@ -62,7 +62,7 @@ test('changes to duplicate transitive versions are checked independently', () =>
 
 test('renaming Yarn descriptors cannot disguise a breaking update', () => {
   assert.throws(() => checkLockfile('yarn.lock', berry({'a@npm:^0.2.0': yarnEntry('a', '0.2.3')}),
-    berry({'a@npm:^0.3.0': yarnEntry('a', '0.3.1')})), /incompatible version line/);
+    berry({'a@npm:^0.3.0': yarnEntry('a', '0.3.1')})), /Package entry removed/);
 });
 
 test('changed edges cannot switch to an already present incompatible Yarn copy', () => {
@@ -84,11 +84,11 @@ test('npm hoisting cannot hide a switch to an existing incompatible copy', () =>
   const after = JSON.parse(before);
   delete after.packages['node_modules/parent/node_modules/child'];
   assert.throws(() => checkLockfile('package-lock.json', before, JSON.stringify(after)),
-    /Breaking dependency edge/);
+    /Package entry removed/);
 });
 
 for (const name of ['parent', '@scope/parent']) {
-  test(`npm peer edges follow ancestor copies when ${name} is hoisted`, () => {
+  test(`hoisting ${name} requires manual review even with compatible peers`, () => {
     const parent = npmEntry(name, '1.0.0', {peerDependencies: {child: '*'}});
     const packages = {
       'node_modules/child': npmEntry('child', '2.0.0'),
@@ -104,13 +104,13 @@ for (const name of ['parent', '@scope/parent']) {
     packages[`node_modules/${name}`] = parent;
     packages[`node_modules/${name}/node_modules/child`] = npmEntry('child', '1.0.0');
     assert.throws(() => checkLockfile('package-lock.json', before, npmLock(3, packages)),
-      /Breaking dependency edge/);
+      /Package entry removed/);
 
     packages['node_modules/child'] = npmEntry('child', '1.1.0');
     const compatibleBefore = JSON.parse(before);
     compatibleBefore.packages['node_modules/child'] = npmEntry('child', '1.1.0');
-    assert.doesNotThrow(() => checkLockfile('package-lock.json',
-      JSON.stringify(compatibleBefore), npmLock(3, packages)));
+    assert.throws(() => checkLockfile('package-lock.json',
+      JSON.stringify(compatibleBefore), npmLock(3, packages)), /Package entry removed/);
   });
 }
 
@@ -122,7 +122,6 @@ test('replacing an npm peer at the same path still rejects a major upgrade', () 
   };
   const before = npmLock(3, packages);
   packages['node_modules/child'] = packages['node_modules/container/node_modules/child'];
-  delete packages['node_modules/container/node_modules/child'];
   assert.throws(() => checkLockfile('package-lock.json', before, npmLock(3, packages)),
     /Breaking/);
 });
@@ -179,7 +178,8 @@ for (const flag of ['dev', 'peer', 'optional', 'devOptional']) {
       for (const key of ['node_modules/a', 'node_modules/parent/node_modules/a']) {
         assert.throws(
           () => checkLockfile('package-lock.json', before, npmLock(3, {[key]: changed})),
-          /metadata changed without a version update/);
+          key === 'node_modules/a' ? /metadata changed without a version update/ :
+          /Package entry removed/);
       }
     });
   }
@@ -197,18 +197,18 @@ for (const format of [1, 2]) {
         {parent: npmEntry('parent', '1.0.0', {dependencies: {a: changed}})}]) {
         assert.throws(
           () => checkLockfile('npm-shrinkwrap.json', lock({a: entry}), lock(dependencies)),
-          /metadata changed without a version update/);
+          dependencies.a ? /metadata changed without a version update/ : /Package entry removed/);
       }
     });
   }
 }
 
-test('unchanged installation flags permit relocation and compatible version updates', () => {
+test('unchanged installation flags permit version updates but not relocation', () => {
   for (const flag of ['dev', 'peer', 'optional', 'devOptional']) {
     const entry = npmEntry('a', '1.0.0', {[flag]: true});
     const before = npmLock(3, {'node_modules/a': entry});
-    assert.equal(checkLockfile('package-lock.json', before,
-      npmLock(3, {'node_modules/parent/node_modules/a': entry})), 0);
+    assert.throws(() => checkLockfile('package-lock.json', before,
+      npmLock(3, {'node_modules/parent/node_modules/a': entry})), /Package entry removed/);
     assert.equal(checkLockfile('package-lock.json', before,
       npmLock(3, {'node_modules/a': npmEntry('a', '1.1.0', {[flag]: true})})), 1);
   }
@@ -220,7 +220,7 @@ for (const extra of [{bin: {a: '../../other/bin.js'}}, {dependencies: {other: '^
     const before = npmLock(3, {'node_modules/a': entry});
     const after = npmLock(3, {'node_modules/parent/node_modules/a': {...entry, ...extra}});
     assert.throws(() => checkLockfile('package-lock.json', before, after),
-      /metadata changed without a version update/);
+      /Package entry removed/);
   });
 }
 
@@ -229,10 +229,10 @@ test('renaming a Yarn descriptor cannot change same-version dependency metadata'
   const after = berry({'a@npm:~1.0.0':
     yarnEntry('a', '1.0.0', {dependencies: {b: 'npm:^1.0.0'}})});
   assert.throws(() => checkLockfile('yarn.lock', before, after),
-    /metadata changed without a version update/);
+    /Package entry removed/);
 });
 
-test('deduplicating a compatible nested npm copy is non-breaking', () => {
+test('deduplicating a compatible nested npm copy requires manual review', () => {
   const packages = {
     'node_modules/a': npmEntry('a', '1.0.0', {dependencies: {b: '^1.0.0'}}),
     'node_modules/b': npmEntry('b', '1.1.0'),
@@ -240,7 +240,8 @@ test('deduplicating a compatible nested npm copy is non-breaking', () => {
   };
   const before = npmLock(3, packages);
   delete packages['node_modules/a/node_modules/b'];
-  assert.doesNotThrow(() => checkLockfile('package-lock.json', before, npmLock(3, packages)));
+  assert.throws(() => checkLockfile('package-lock.json', before, npmLock(3, packages)),
+    /Package entry removed/);
 });
 
 test('npm v2 legacy data is validated as well as the packages map', () => {
@@ -250,16 +251,16 @@ test('npm v2 legacy data is validated as well as the packages map', () => {
     npmLock(2, packages, {a: npmEntry('a', '2.0.0')})), /Breaking/);
 });
 
-test('new transitive dependencies and compatible descriptor regrouping are allowed', () => {
+test('new transitive dependencies and descriptors require manual review', () => {
   const before = berry({'a@npm:^1.0.0': yarnEntry('a', '1.0.0')});
   const after = berry({
     'a@npm:^1.0.0, a@npm:^1.1.0': yarnEntry('a', '1.1.0', {dependencies: {b: 'npm:^1.0.0'}}),
     'b@npm:^1.0.0': yarnEntry('b', '1.0.0'),
   });
-  assert.ok(checkLockfile('yarn.lock', before, after) > 0);
+  assert.throws(() => checkLockfile('yarn.lock', before, after), /Package entry added/);
 });
 
-test('new transitive npm packages can carry their own executable and dependency metadata', () => {
+test('fabricated parent metadata cannot authorize new transitive npm packages', () => {
   const before = npmLock(3, {'node_modules/a': npmEntry('a', '1.0.0')});
   const after = npmLock(3, {
     'node_modules/a': npmEntry('a', '1.1.0', {dependencies: {b: '^1.0.0'}}),
@@ -267,14 +268,68 @@ test('new transitive npm packages can carry their own executable and dependency 
       dependencies: {c: '^1.0.0'}}),
     'node_modules/c': npmEntry('c', '1.0.0'),
   });
-  assert.equal(checkLockfile('package-lock.json', before, after), 1);
+  assert.throws(() => checkLockfile('package-lock.json', before, after), /Package entry added/);
 });
 
-test('removing obsolete registry dependencies leaves installability to target CI', () => {
+test('removing obsolete registry dependencies requires manual review', () => {
   const before = berry({
     'a@npm:^1.0.0': yarnEntry('a', '1.0.0', {dependencies: {b: 'npm:^1.0.0'}}),
     'b@npm:^1.0.0': yarnEntry('b', '1.0.0'),
   });
   const after = berry({'a@npm:^1.0.0': yarnEntry('a', '1.1.0')});
-  assert.equal(checkLockfile('yarn.lock', before, after), 1);
+  assert.throws(() => checkLockfile('yarn.lock', before, after), /Package entry removed/);
+});
+
+for (const format of [1, 2, 3]) {
+  test(`npm format ${format} rejects additions, removals, and equal-count replacements`, () => {
+    const lock = entries => format === 1 ? npmLock(1, entries) : npmLock(format,
+      Object.fromEntries(Object.entries(entries).map(([name, entry]) => (
+        [`node_modules/${name}`, entry]))), format === 2 ? entries : undefined);
+    const a = npmEntry('a', '1.0.0'), b = npmEntry('b', '1.0.0');
+    const before = lock({a});
+    assert.throws(() => checkLockfile('package-lock.json', before, lock({a, b})),
+      /Package entry added/);
+    assert.throws(() => checkLockfile('package-lock.json', before, lock({})),
+      /Package entry removed/);
+    assert.throws(() => checkLockfile('package-lock.json', before, lock({b})),
+      /Package entry removed/);
+  });
+}
+
+test('npm v2 legacy additions and removals are rejected even with unchanged packages', () => {
+  const a = npmEntry('a', '1.0.0'), b = npmEntry('b', '1.0.0');
+  const packages = {'node_modules/a': a};
+  const before = npmLock(2, packages, {a});
+  assert.throws(() => checkLockfile('npm-shrinkwrap.json', before,
+    npmLock(2, packages, {a, b})), /Package entry added/);
+  assert.throws(() => checkLockfile('npm-shrinkwrap.json', before,
+    npmLock(2, packages, {})), /Package entry removed/);
+});
+
+test('adding another installed copy of an existing npm package requires manual review', () => {
+  const a = npmEntry('a', '1.0.0');
+  const packages = {'node_modules/a': a};
+  const before = npmLock(3, packages);
+  packages['node_modules/parent/node_modules/a'] = a;
+  assert.throws(() => checkLockfile('package-lock.json', before, npmLock(3, packages)),
+    /Package entry added/);
+});
+
+test('Yarn Classic additions and removals require manual review', () => {
+  const before = classic('1.20.8');
+  const extra = '\n"a@^1.0.0":\n  version "1.0.0"\n' +
+    '  resolved "https://registry.npmjs.org/a/-/a-1.0.0.tgz"\n';
+  assert.throws(() => checkLockfile('yarn.lock', before, classic('1.20.9') + extra),
+    /Package entry added/);
+  assert.throws(() => checkLockfile('yarn.lock', before + extra, classic('1.20.9')),
+    /Package entry removed/);
+});
+
+test('regrouping existing Yarn descriptors preserves the entry set', () => {
+  const before = berry({
+    'a@npm:^1.0.0': yarnEntry('a', '1.1.0'),
+    'a@npm:^1.1.0': yarnEntry('a', '1.1.0'),
+  });
+  const after = berry({'a@npm:^1.0.0, a@npm:^1.1.0': yarnEntry('a', '1.2.0')});
+  assert.equal(checkLockfile('yarn.lock', before, after), 2);
 });
