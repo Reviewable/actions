@@ -138,8 +138,7 @@ function checkEdges(before, after, oldKey, newKey) {
 function checkSameVersion(previous, next, key) {
   insist(equal(previous.artifact, next.artifact),
     `Artifact changed without a version update: ${key}`);
-  const metadata = ({dev, peer, ...rest}) => rest;
-  insist(equal(metadata(previous.value), metadata(next.value)),
+  insist(equal(previous.value, next.value),
     `Package metadata changed without a version update: ${key}`);
 }
 

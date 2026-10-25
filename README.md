@@ -25,8 +25,9 @@ Eligibility is checked independently of the PR's title or author:
   versions remain the same, `0.x` minors remain the same, and `0.0.x` patches remain
   the same. Downgrades, prereleases, changed non-registry entries, artifact changes
   without a version change, and unverifiable lockfile migrations require manual review.
-  Npm peer edges use ancestor resolution. Same-version executable, dependency, or
-  optionality metadata edits require manual review, including relocated entries.
+  Npm peer edges use ancestor resolution. Same-version metadata edits require manual
+  review, including executable/dependency metadata and the `dev`, `peer`, `optional`,
+  and `devOptional` installation flags, even for relocated entries.
 - Reported CI on the current head and any current test-merge commit has passed.
   Required checks from active rulesets and legacy branch protection must all pass
   on the test-merge commit when it has eligible CI results, otherwise on the head.

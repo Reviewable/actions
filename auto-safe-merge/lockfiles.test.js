@@ -170,7 +170,7 @@ test('same-version executable metadata edits require manual review', () => {
     lock({a: '../../other/bin.js'})), /metadata changed without a version update/);
 });
 
-for (const flag of ['optional', 'devOptional']) {
+for (const flag of ['dev', 'peer', 'optional', 'devOptional']) {
   for (const value of [false, undefined]) {
     test(`same-version ${flag} cannot become ${value}, including during relocation`, () => {
       const entry = npmEntry('a', '1.0.0', {[flag]: true});
@@ -184,6 +184,35 @@ for (const flag of ['optional', 'devOptional']) {
     });
   }
 }
+
+for (const format of [1, 2]) {
+  for (const value of [false, undefined]) {
+    test(`npm v${format} legacy dev flag cannot become ${value}`, () => {
+      const entry = npmEntry('a', '1.0.0', {dev: true, hasInstallScript: true});
+      const changed = {...entry, dev: value};
+      const packages = {'node_modules/a': entry};
+      const lock = dependencies => format === 1 ? npmLock(1, dependencies) :
+        npmLock(2, packages, dependencies);
+      for (const dependencies of [{a: changed},
+        {parent: npmEntry('parent', '1.0.0', {dependencies: {a: changed}})}]) {
+        assert.throws(
+          () => checkLockfile('npm-shrinkwrap.json', lock({a: entry}), lock(dependencies)),
+          /metadata changed without a version update/);
+      }
+    });
+  }
+}
+
+test('unchanged installation flags permit relocation and compatible version updates', () => {
+  for (const flag of ['dev', 'peer', 'optional', 'devOptional']) {
+    const entry = npmEntry('a', '1.0.0', {[flag]: true});
+    const before = npmLock(3, {'node_modules/a': entry});
+    assert.equal(checkLockfile('package-lock.json', before,
+      npmLock(3, {'node_modules/parent/node_modules/a': entry})), 0);
+    assert.equal(checkLockfile('package-lock.json', before,
+      npmLock(3, {'node_modules/a': npmEntry('a', '1.1.0', {[flag]: true})})), 1);
+  }
+});
 
 for (const extra of [{bin: {a: '../../other/bin.js'}}, {dependencies: {other: '^1.0.0'}}]) {
   test(`relocating an npm entry cannot change ${Object.keys(extra)[0]} metadata`, () => {
