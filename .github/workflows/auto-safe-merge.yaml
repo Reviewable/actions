@@ -24,7 +24,7 @@ jobs:
     # Run only reviewed workflow code, never a version supplied by the target PR.
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
         with:
@@ -39,9 +39,13 @@ jobs:
 
       - name: Install validator dependencies
         working-directory: auto-safe-merge
-        run: npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+        env:
+          YARN_ENABLE_SCRIPTS: 'false'
+        run: |
+          corepack enable
+          yarn install --immutable --mode=skip-build
 
-      - name: Check eligibility, comment, and merge
+      - name: Reconstruct, merge, and confirm
         uses: actions/github-script@v8
         env:
           TARGET_REPO: ${{ inputs.repo }}

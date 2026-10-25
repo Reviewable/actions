@@ -18,9 +18,11 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
-      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: |
+          corepack enable
+          yarn install --immutable --mode=skip-build
         working-directory: auto-safe-merge
-      - run: npm run lint
+      - run: yarn lint
         working-directory: auto-safe-merge
-      - run: npm test
+      - run: yarn test
         working-directory: auto-safe-merge

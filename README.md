@@ -1,86 +1,93 @@
 # actions
-Reusable GitHub action workflows
+
+Reusable GitHub action workflows.
 
 ## Auto safe merge
 
-Manually run **Auto safe merge** (`auto-safe-merge.yaml`) on the default branch,
-with `repo` set to `Reviewable/<repository>` and `pr` set to the PR number.
-Wait for the target PR's CI to finish first. No push, PR, schedule, reusable-workflow,
-or comment event can trigger this workflow.
+Manually dispatch **Auto safe merge** (`auto-safe-merge.yaml`) on the default branch
+with `repo: Reviewable/<repository>` and `pr: <number>`. There are no automatic or
+reusable-workflow triggers. The authoring agent checks that the PR looks mergeable
+and that CI has passed on the current changes before dispatching. The workflow
+leaves branch-policy and required-check enforcement to GitHub's merge API.
 
-The workflow uses the `REVIEWABLE_GITHUB_TOKEN` secret for checkout, GitHub API
-access, its eligibility comment, and the merge. It verifies that the token belongs
-to `reviewable-ops`. That account must be an organization member with permission to
-read organization memberships, access the target repository and its branch-protection
-settings, comment and merge, and use the existing code
-review ruleset exemption. The workflow does not change repository protections or
-fall back to `GITHUB_TOKEN`.
+All authenticated GitHub operations in this workflow use `REVIEWABLE_GITHUB_TOKEN`.
+It must authenticate as `reviewable-ops`, with repository access, permission to read
+organization membership, and the existing exemption from code-review requirements.
+The workflow never changes protections or falls back to another token.
 
-Eligibility is checked independently of the PR's title:
+### Eligible changes
 
-- The repository's `purpose` custom property is `tool` or `library`.
-- The PR author has active membership in `Reviewable`, verified through the authenticated
-  organization-membership API. Pending invitations, outside collaborators, missing authors,
-  and unreadable membership cannot qualify. PR author-association labels are not proof.
-- The PR is open, ready for review, and mergeable, with only modifications to
-  existing `yarn.lock`, `package-lock.json`, or `npm-shrinkwrap.json` files, including
-  nested packages. Yarn Classic/modern and npm lockfile formats 1–3 are supported.
-- Direct and transitive resolved-version updates are non-breaking: stable major
-  versions remain the same, `0.x` minors remain the same, and `0.0.x` patches remain
-  the same. Downgrades, prereleases, changed non-registry entries, artifact changes
-  without a version change, and unverifiable lockfile migrations require manual review.
-  Npm peer edges use ancestor resolution. Same-version metadata edits require manual
-  review, including executable/dependency metadata. The `dev`, `peer`, `optional`,
-  and `devOptional` installation flags must stay unchanged even across version upgrades,
-  including npm v2 legacy dependency data.
-- Registry resolutions satisfy their Yarn descriptors and installed npm dependency
-  ranges, including aliases, optional dependencies, and npm peers. Npm direct ranges
-  are also checked against the adjacent `package.json` from the inspected commit,
-  including dev dependencies and npm v1 lockfiles. Registry tags, unsupported range
-  syntax, and npm `overrides` require manual verification.
-- No package entries are added or removed. Parsed npm paths and Yarn descriptors
-  must stay the same, including duplicate copies and npm v2 legacy dependency data.
-  Relocation, deduplication that removes entries, and descriptor additions/removals
-  require manual review. Regrouping existing Yarn descriptors is allowed only when
-  it preserves the parsed entry set and passes the other checks.
-- Reported CI on the current head and any current test-merge commit has passed.
-  Required checks from active rulesets and legacy branch protection must all pass
-  on the test-merge commit when it has eligible CI results, otherwise on the head.
-  Results from different commits cannot combine to satisfy requirements. Missing,
-  pending, failed, or all-skipped CI does not qualify. Only the review status
-  `code-review/reviewable` is excluded.
-  A successful commit status alone counts as CI evidence only when branch policy
-  explicitly requires that context without an app restriction.
-  Both commits must have fewer than 1,000 check suites; an unavailable or invalid
-  suite count also requires manual handling, since the check-run API can omit older
-  suites at its cap. Workflow histories reaching their 1,000-result cap are rejected too.
-- Unsupported ruleset requirements, including deployments, code scanning, merge
-  queues, required workflows, and strict up-to-date policies, require manual handling
-  unless GitHub confirms that the token can bypass that specific ruleset. The workflow
-  checks `current_user_can_bypass` using the repository-level ruleset API, including
-  inherited rulesets. Errors identify the rule type, ruleset name, and ID before the
-  qualification comment is posted. Bypass permissions do not waive this workflow's
-  own lockfile or CI eligibility checks.
-- Classic branch protections are assumed to apply to `reviewable-ops`, which is
-  neither a repository admin nor a custom-role bypass actor. Unsupported approval,
-  conversation-resolution, signature, push-restriction, branch-lock, strict-update,
-  or unknown protection settings stop the workflow before its qualification comment.
-  Linear history is supported with squash or rebase merges; required status checks
-  retain their context and app requirements.
+All Reviewable repositories qualify, without custom-property checks. The PR author
+must be an active organization member, and the PR must be open, ready, and target
+the default branch. Changes are limited to existing modern Yarn lockfiles and these
+optional manifest edits:
 
-Package additions and removals require manual review even when CI passes. The validator
-compares existing entries; it does not authenticate package metadata against the registry.
+- One patch-level publication version bump for a package already declaring
+  `bundleDependencies: true` on the default branch.
+- A non-breaking change to an exact Corepack Yarn pin. Replay requires Yarn 4.13.0
+  or newer and uses the resulting pin, including its integrity suffix when present.
 
-The workflow reads target files as data through the GitHub API; it never checks
-out the target PR, installs its dependencies, or executes its scripts. It posts
-the qualification comment and immediately requests merging the verified head using
-squash when enabled, otherwise rebase or merge. All eligibility checks and head/base
-rechecks finish before posting; no checks run between the comment and merge request.
-The request still specifies the verified head SHA, and a merge refused by GitHub is
-reported as a failure. Security updates can qualify under the same rules. A successful
-dispatch merges immediately rather than enabling GitHub's deferred auto-merge setting.
+Direct and transitive version changes must be non-breaking and cannot downgrade.
+For pre-1.0 releases, `0.2.1 -> 0.3.0` and `0.0.1 -> 0.0.2` count as breaking.
+Security fixes use the same eligibility rules. No human review is requested for
+qualifying updates. Code, generated bundles, dependency ranges, configuration,
+package-manager migrations, and unsupported lockfile formats are outside this path.
 
-From `auto-safe-merge/`, run `npm ci --ignore-scripts`, `npm run lint`, and `npm test`.
-ESLint uses the shared `reviewable-configs` baseline for the validator, tests, and
-lint configuration, with Node/CommonJS settings for JavaScript files. CI runs both
-lint and tests; the merge workflow installs only runtime dependencies.
+### Proof by construction
+
+1. Fetch the PR's complete changed-file list and head/base SHAs in the same GraphQL
+   request, checking consistency across pages. Read its files at the captured head.
+2. Parse exactly one [versioned YAML recipe](auto-safe-merge/recipe.md) in the PR
+   description. Download the current default-branch snapshot; never check out or
+   run configuration or scripts from the target PR.
+3. Apply only the declared manifest value replacements. Seed exact npm resolutions
+   for the declared Yarn descriptors, retaining all other baseline entries. Reject
+   stale original versions, breaking replacements, and new descriptors that move
+   an existing package across a compatibility boundary.
+4. Run the selected Corepack Yarn with `--refresh-lockfile --check-resolutions`
+   in `--mode=update-lockfile`. Yarn reconstructs registry metadata, dependency
+   edges, checksums, and descriptor grouping. Linking and builds are skipped;
+   child processes receive a restricted environment without GitHub credentials.
+   Caches and the checkout are disposable. Baseline Git dependencies may need
+   source packing, so baseline configuration and tool pins remain trusted inputs.
+5. Run again and require stable bytes. Yarn forbids combining `--immutable` with
+   this mode, so the code checks stability itself. Check unchanged manifest content,
+   complete version-change coverage, and exact equality of each generated lockfile
+   with the PR. Formatting and checksums are not normalized away.
+6. Recheck the head and default-branch SHAs, then attempt a merge bound to the
+   verified head SHA. GitHub makes the final merge decision. Post a confirmation
+   only after success. A failed comment produces a warning without retrying the merge.
+
+Added/removed transitive descriptors and deduplication are supported when replay
+reproduces them. PR metadata cannot supply arbitrary commands, URLs, patches, or
+package metadata. Unchanged non-registry entries can remain in a lockfile; selecting
+a non-registry update in the recipe is unsupported. A new package with no previous
+version is accepted only if Yarn derives it from the unchanged manifests or an
+accepted dependency update. A new descriptor for an existing package must have a
+compatible baseline version. Failure is reported, never converted into a review bypass.
+
+### Agent tooling and tests
+
+From `auto-safe-merge`, install with Corepack's pinned Yarn and run:
+
+```bash
+yarn install --immutable
+yarn lint
+yarn test
+node describe.js /path/to/checkout origin/master HEAD --verify
+```
+
+The helper reads committed Git blobs, prints a recipe, and with `--verify` uses the
+same replay implementation in a disposable directory. Refresh the default-branch
+ref first, substituting its actual name when different. No working-tree changes,
+credentials, or installed dependencies from that checkout are used. Without
+`--verify`, output is a proposed recipe, not evidence that reconstruction passed.
+
+Tests cover parser/schema failures, semver boundaries, permitted manifest changes,
+pagination and SHA races, membership, merge/comment ordering, and actual Corepack
+Yarn replay against a temporary local registry. The registry fixture exercises
+transitive updates, duplicate versions, aliases, pre-1.0 updates, additions/removals,
+platform-optional packages, future releases, range violations, and checksum tampering.
+The integration test downloads the pinned Yarn through Corepack and needs network
+access for that download. Normal PR CI uses its read-only GitHub token and does not
+receive the privileged merge token.
