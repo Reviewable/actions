@@ -94,6 +94,17 @@ test('Yarn pins require the CLI features introduced in 4.0', () => {
   assert.throws(() => parseYarnVersion('yarn@latest'), /exact/);
 });
 
+test('direct non-registry entries are present, while a missing baseline entry is invalid', () => {
+  const before = parseLockfile(stringifySyml({__metadata: {version: 8},
+    'root@workspace:.': {version: '0.0.0-use.local', resolution: 'root@workspace:.',
+      dependencies: {child: 'workspace:packages/child'}},
+    'child@workspace:packages/child': {version: '0.0.0-use.local',
+      resolution: 'child@workspace:packages/child'}}));
+  assert.doesNotThrow(() => validateDirectUpdates(before, before));
+  before.entries.delete('child@workspace:packages/child');
+  assert.throws(() => validateDirectUpdates(before, before), /Missing direct dependency/);
+});
+
 test('manifest-only recipes round-trip without a lockfile section', () => {
   const plan = {schema: SCHEMA, manifests: {'package.json': {
     packageManager: {from: 'yarn@4.0.0', to: 'yarn@4.13.0'}}}};

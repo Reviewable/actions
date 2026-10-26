@@ -184,7 +184,11 @@ function validateDirectUpdates(before, after) {
     if (!workspace.resolution.includes('@workspace:')) continue;
     for (const [name, range] of Object.entries(workspace.dependencies || {})) {
       const selector = `${name}@${range}`;
-      const oldEntry = parseRegistryEntry(before.entries.get(selector));
+      const baselineEntry = before.entries.get(selector);
+      insist(baselineEntry, `Missing direct dependency in baseline lockfile: ${selector}`);
+      // Workspace, Git, patch, and other non-registry entries also exist in the lockfile.
+      // They are outside this npm-version check; recipes cannot select their updates.
+      const oldEntry = parseRegistryEntry(baselineEntry);
       if (!oldEntry) continue;
       const newEntry = parseRegistryEntry(after.entries.get(selector));
       if (equal(oldEntry, newEntry)) continue;
