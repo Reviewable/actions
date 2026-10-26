@@ -16,8 +16,8 @@ on:
 permissions: {}
 
 concurrency:
-  # GitHub concurrency group names are case-insensitive, including repository inputs.
-  group: auto-safe-merge-${{ inputs.repo }}-${{ inputs.pr }}
+  # Serialize all dependency PRs for a repository; group names are case-insensitive.
+  group: auto-safe-merge-${{ inputs.repo }}
   cancel-in-progress: false
 
 jobs:

@@ -145,14 +145,22 @@ async function replay({github, owner, repo, baseSha, plan, expected}) {
     const archive = path.join(scratch, 'baseline.tar.gz');
     const {data} = await github.rest.repos.downloadTarballArchive({owner, repo, ref: baseSha});
     await fs.writeFile(archive, Buffer.from(data));
+    let archiveError;
     await tar.x({file: archive, cwd: root, strip: 1, strict: true,
       filter: (name, entry) => {
-        insist(['File', 'Directory'].includes(entry.type),
-          `Unsupported archive entry: ${name} (${entry.type})`);
-        insist(!name.split('/').includes('..') && !name.includes('\\') &&
-          !path.posix.isAbsolute(name), `Unsafe archive path: ${name}`);
+        // node-tar does not turn filter exceptions into promise rejections. Reject after
+        // extraction settles so the caller receives the error and finally can clean up.
+        if (!['File', 'Directory'].includes(entry.type)) {
+          archiveError ||= `Unsupported archive entry: ${name} (${entry.type})`;
+          return false;
+        }
+        if (name.split('/').includes('..') || name.includes('\\') || path.posix.isAbsolute(name)) {
+          archiveError ||= `Unsafe archive path: ${name}`;
+          return false;
+        }
         return !name.split('/').some(part => ['.git', 'node_modules'].includes(part));
       }});
+    insist(!archiveError, archiveError);
     await reconstruct({root, scratch, plan, expected});
   } finally {
     await fs.rm(scratch, {recursive: true, force: true});

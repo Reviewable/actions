@@ -70,6 +70,9 @@ package-manager migrations, and unsupported lockfile formats are outside this pa
 
 The proof applies to the captured default-branch snapshot. The merge API pins the
 PR head, but does not freeze the base branch between reconstruction and merging.
+Auto-merge runs are serialized per repository so each run captures the base after
+the preceding run finishes. Other workflows and human merges are not covered by
+this concurrency group and may still move the base during reconstruction.
 GitHub rejects conflicts; nonconflicting concurrent changes can still affect the
 combined result, as with other PR merges.
 
@@ -110,6 +113,9 @@ range violations, checksum tampering, and manifest-only pin updates, including
 workspace pins with shared lockfiles, invalid integrity hashes, and native built-in
 compatibility patches. Large raw file responses retain their full content. Replay is
 exercised with Yarn 4.0.0 as well as newer pins, without normalizing their lock formats.
+Archive rejection tests use a child process to verify that unsupported links and
+unsafe paths reject normally and remove the temporary checkout, including after
+valid files have been extracted.
 The integration test downloads the pinned Yarn through Corepack and needs network
 access for that download. Normal PR CI uses its read-only GitHub token and does not
 receive the privileged merge token.

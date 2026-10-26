@@ -5,6 +5,9 @@ import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 import crypto from 'node:crypto';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {fileURLToPath} from 'node:url';
 import * as tar from 'tar';
 import {SCHEMA, parseLockfile, describeChanges, seedLockfile} from './plan.js';
 import {runYarn, reconstruct, createReplayEnvironment} from './replay.js';
@@ -15,6 +18,17 @@ test('replay children receive no GitHub credentials or arbitrary Node options', 
   assert.equal(env.GITHUB_TOKEN, undefined);
   assert.equal(env.REVIEWABLE_GITHUB_TOKEN, undefined);
   assert.equal(env.YARN_ENABLE_SCRIPTS, 'false');
+});
+
+test('invalid archive entries reject normally and remove the replay directory', async t => {
+  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-rejection-test-'));
+  t.after(() => fs.rm(scratch, {recursive: true, force: true}));
+  // Isolate the stream callback: an uncaught exception must fail the child, not this test runner.
+  await promisify(execFile)(process.execPath,
+    [fileURLToPath(new URL('./fixtures/archive-rejection.js', import.meta.url))], {
+      env: {...process.env, TMPDIR: scratch, TEMP: scratch, TMP: scratch},
+      timeout: 10000, windowsHide: true,
+    });
 });
 
 test('real Yarn compatibility patches replay from their underlying npm selections',
