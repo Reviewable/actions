@@ -183,6 +183,41 @@ test('real Corepack Yarn replay: transitive majors, aliases, additions and futur
           ['package.json', minimumBeforePin.replace('yarn@4.0.0', 'yarn@4.13.0')]])}),
       /exactly match/);
 
+    async function createWorkspacePinUpdate(name, ownerPin, from, to) {
+      const projectRoot = await createProject(name, after);
+      await fs.writeFile(path.join(projectRoot, 'package.json'), JSON.stringify({
+        ...JSON.parse(manifest), packageManager: ownerPin, workspaces: ['packages/*']}));
+      const file = 'packages/child/package.json';
+      await fs.mkdir(path.dirname(path.join(projectRoot, file)), {recursive: true});
+      const child = JSON.stringify({name: 'child', private: true, packageManager: from});
+      await fs.writeFile(path.join(projectRoot, file), child);
+      await runYarn({cwd: projectRoot, pin: ownerPin, scratch});
+      const beforeManifest = await fs.readFile(path.join(projectRoot, file), 'utf8');
+      return {root: projectRoot, scratch, plan: {schema: SCHEMA, manifests: {
+        [file]: {packageManager: {from, to}}}},
+      expected: new Map([[file, beforeManifest.replace(from, to)]])};
+    }
+    await t.test('a nested workspace pin can preserve its shared lockfile', async () => {
+      const fixture = await createWorkspacePinUpdate(
+        'workspace-pin', 'yarn@4.18.0', 'yarn@4.18.0', 'yarn@4.18.1');
+      const lock = await fs.readFile(path.join(fixture.root, 'yarn.lock'), 'utf8');
+      await reconstruct(fixture);
+      assert.equal(await fs.readFile(path.join(fixture.root, 'yarn.lock'), 'utf8'), lock);
+      assert.equal(await fs.stat(path.join(fixture.root, 'packages/child/yarn.lock'))
+        .catch(() => null), null);
+    });
+    await t.test('an invalid nested pin integrity hash fails Corepack', async () => {
+      const fixture = await createWorkspacePinUpdate('workspace-bad-pin', 'yarn@4.18.1',
+        'yarn@4.18.1', 'yarn@4.18.1+sha512.' + '0'.repeat(128));
+      // The owner has already cached this version; that must not hide the invalid new hash.
+      await assert.rejects(reconstruct(fixture), /Mismatch hashes/);
+    });
+    await t.test('a nested pin must preserve the owner pin\'s lockfile bytes', async () => {
+      const fixture = await createWorkspacePinUpdate(
+        'workspace-format', 'yarn@4.0.0', 'yarn@4.0.0', 'yarn@4.13.0');
+      await assert.rejects(reconstruct(fixture), /changed the reconstructed lockfile/);
+    });
+
     // The same broad transitive descriptor becomes direct when a workspace devDependency uses it.
     stage = 0;
     const workspaceRoot = await createProject('workspace');

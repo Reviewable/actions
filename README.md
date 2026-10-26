@@ -50,17 +50,26 @@ package-manager migrations, and unsupported lockfile formats are outside this pa
    in `--mode=update-lockfile`. Yarn reconstructs registry metadata, dependency
    edges, checksums, and descriptor grouping. Linking and builds are skipped;
    child processes receive a restricted environment without GitHub credentials.
-   Caches and the checkout are disposable. Baseline Git dependencies may need
-   source packing, so baseline configuration and tool pins remain trusted inputs.
+   Corepack caches are isolated by complete pin so a cached version cannot hide
+   an invalid integrity suffix. Caches and the checkout are disposable. Baseline
+   Git dependencies may need source packing, so baseline configuration and tool
+   pins remain trusted inputs.
 5. Run again and require stable bytes. Yarn forbids combining `--immutable` with
-   this mode, so the code checks stability itself. Check unchanged manifest content,
-   complete version-change coverage, and exact equality of each generated lockfile
+   this mode, so the code checks stability itself. Exercise edited workspace pins
+   from their own directories and require the shared lockfile to remain unchanged.
+   Check unchanged manifest content, complete version-change coverage, and exact
+   equality of each generated lockfile
    with the PR. Use baseline workspace entries to identify direct descriptors,
    including dev and optional dependencies, and require their versions to remain
    compatible. Formatting and checksums are not normalized away.
 6. Attempt a merge bound to the verified head SHA without rereading the PR.
    GitHub makes the final merge decision. Post a confirmation
    only after success. A failed comment produces a warning without retrying the merge.
+
+The proof applies to the captured default-branch snapshot. The merge API pins the
+PR head, but does not freeze the base branch between reconstruction and merging.
+GitHub rejects conflicts; nonconflicting concurrent changes can still affect the
+combined result, as with other PR merges.
 
 Added/removed transitive descriptors and deduplication are supported when replay
 reproduces them. PR metadata cannot supply arbitrary commands, URLs, patches, or
@@ -92,7 +101,8 @@ the file-count limit and pinned merge, membership, merge/comment ordering, and a
 Yarn replay against a temporary local registry. The registry fixture exercises
 transitive majors, direct workspace dev dependencies, duplicate versions, aliases,
 pre-1.0 updates, additions/removals, platform-optional packages, future releases,
-range violations, checksum tampering, and manifest-only pin updates. Replay is
+range violations, checksum tampering, and manifest-only pin updates, including
+workspace pins with shared lockfiles and invalid integrity hashes. Replay is
 exercised with Yarn 4.0.0 as well as newer pins, without normalizing their lock formats.
 The integration test downloads the pinned Yarn through Corepack and needs network
 access for that download. Normal PR CI uses its read-only GitHub token and does not

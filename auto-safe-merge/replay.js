@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import {createHash} from 'node:crypto';
 import {execFile} from 'node:child_process';
 import {promisify, isDeepStrictEqual as equal} from 'node:util';
 import * as tar from 'tar';
@@ -37,22 +38,26 @@ function createReplayEnvironment(scratch) {
     CI: 'true'};
 }
 
-async function runYarn({cwd, pin, scratch, immutable = false}) {
+async function runYarn({cwd, pin, scratch, immutable = false,
+  lockfile = path.join(cwd, 'yarn.lock')}) {
   parseYarnVersion(pin);
   const args = [pin, 'install', '--mode=update-lockfile',
     '--check-resolutions', '--refresh-lockfile'];
   // Yarn forbids --immutable with update-lockfile. Compare bytes without linking/building.
-  const before = immutable ? await fs.readFile(path.join(cwd, 'yarn.lock'), 'utf8') : null;
+  const before = immutable ? await fs.readFile(lockfile, 'utf8') : null;
   const windows = process.platform === 'win32';
   const command = windows ? process.execPath : 'corepack';
   if (windows) {
     args.unshift(path.join(path.dirname(process.execPath),
       'node_modules/corepack/dist/corepack.js'));
   }
+  const env = createReplayEnvironment(scratch);
+  // Corepack caches by version and skips hash checks on a cache hit. Isolate complete pins.
+  env.COREPACK_HOME = path.join(env.COREPACK_HOME, createHash('sha256').update(pin).digest('hex'));
   try {
-    const result = await execute(command, args, {cwd, env: createReplayEnvironment(scratch),
+    const result = await execute(command, args, {cwd, env,
       timeout: 5 * 60 * 1000, maxBuffer: 4 * 1024 * 1024, windowsHide: true});
-    insist(!immutable || before === await fs.readFile(path.join(cwd, 'yarn.lock'), 'utf8'),
+    insist(!immutable || before === await fs.readFile(lockfile, 'utf8'),
       'Yarn changed the reconstructed lockfile on validation');
     return result;
   } catch (error) {
@@ -65,6 +70,7 @@ async function reconstruct({root, scratch, plan, expected, yarn = runYarn}) {
   root = path.resolve(root);
   const originals = new Map();
   const lockfiles = {...plan.lockfiles};
+  const workspacePins = [];
   expected = new Map(expected);
   for (const [file, changes] of Object.entries(plan.manifests || {})) {
     const manifest = await resolveRegularFile(root, file);
@@ -75,6 +81,10 @@ async function reconstruct({root, scratch, plan, expected, yarn = runYarn}) {
       directory = path.posix.dirname(directory);
     }
     const lock = path.posix.join(directory, 'yarn.lock');
+    if (changes.packageManager && directory !== path.posix.dirname(file)) {
+      workspacePins.push({cwd: path.dirname(manifest), pin: changes.packageManager.to,
+        lockfile: path.join(root, lock)});
+    }
     if (!Object.hasOwn(lockfiles, lock)) {
       lockfiles[lock] = {};
       expected.set(lock, await fs.readFile(await resolveRegularFile(root, lock), 'utf8'));
@@ -110,6 +120,9 @@ async function reconstruct({root, scratch, plan, expected, yarn = runYarn}) {
     await yarn({cwd, pin: manifest.packageManager, scratch});
     await yarn({cwd, pin: manifest.packageManager, scratch, immutable: true});
   }
+  // A workspace can select a different Corepack pin while sharing its owner's lockfile.
+  // Exercise every edited pin in that workspace without changing the reconstructed bytes.
+  for (const pin of workspacePins) await yarn({...pin, scratch, immutable: true});
   for (const [file, changes] of Object.entries(lockfiles)) {
     verifyLockfile(originals.get(file), await fs.readFile(path.join(root, file), 'utf8'),
       expected.get(file), changes, file);

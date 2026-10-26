@@ -38,6 +38,8 @@ manifests:
 - Manifest entries describe only an allowed publication patch bump or exact
   compatible Corepack pin update. Dependency ranges, bundle flags, engines, and
   all other fields remain unchanged. Include the owning lockfile only if it changes.
+  Edited workspace pins are also exercised from their own directories and must
+  preserve the lockfile reconstructed by the owning project's pin.
 - Duplicate keys, YAML aliases, unknown fields, multiple recipes, stale `from`
   versions, and undeclared version changes are rejected. Do not include SHAs or
   executable commands; the workflow obtains SHAs from GitHub itself.
