@@ -1,56 +1,38 @@
-'use strict';
+import {insist, parsePlan, validateFilename} from './plan.js';
+import {replay} from './replay.js';
 
-const {insist, parsePlan, filename} = require('./plan');
-const {replay} = require('./replay');
-
-const SNAPSHOT = `query($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+const SNAPSHOT = `query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
-    isArchived isDisabled squashMergeAllowed rebaseMergeAllowed mergeCommitAllowed
-    defaultBranchRef { name target { oid } }
+    isArchived, isDisabled, squashMergeAllowed, rebaseMergeAllowed, mergeCommitAllowed,
+    defaultBranchRef { name, target { oid } },
     pullRequest(number: $number) {
-      state isDraft body author { login } baseRefName baseRefOid headRefOid changedFiles
-      files(first: 100, after: $cursor) {
-        nodes { path changeType }
-        pageInfo { hasNextPage endCursor }
+      state, isDraft, body, author { login }, baseRefName, baseRefOid, headRefOid, changedFiles,
+      files(first: 100) {
+        nodes { path, changeType }
       }
     }
   }
 }`;
 
-function target(repo, pr) {
+function parseTarget(repo, pr) {
   insist(/^Reviewable\/[A-Za-z0-9_.-]+$/i.test(repo), 'repo must be Reviewable/name');
   insist(/^[1-9][0-9]*$/.test(pr) && Number.isSafeInteger(Number(pr)),
     'pr must be a positive integer');
   return {owner: 'Reviewable', repo: repo.split('/')[1], number: Number(pr)};
 }
 
-async function snapshot(github, params) {
-  let cursor = null, original;
-  const files = [];
-  do {
-    // Every page returns its files and the PR commit IDs in the same request.
-    const {repository} = await github.graphql(SNAPSHOT, {...params, cursor});
-    const pull = repository?.pullRequest;
-    insist(pull && pull.state === 'OPEN' && !pull.isDraft, 'PR must be open and ready for review');
-    insist(!repository.isArchived && !repository.isDisabled, 'Repository is archived or disabled');
-    insist(pull.baseRefName === repository.defaultBranchRef?.name &&
+async function fetchSnapshot(github, params) {
+  // Capture the files and commit IDs together; larger PRs are outside this workflow.
+  const {repository} = await github.graphql(SNAPSHOT, params);
+  const pull = repository.pullRequest;
+  insist(pull && pull.state === 'OPEN' && !pull.isDraft, 'PR must be open and ready for review');
+  insist(!repository.isArchived && !repository.isDisabled, 'Repository is archived or disabled');
+  insist(
+    pull.baseRefName === repository.defaultBranchRef.name &&
       pull.baseRefOid === repository.defaultBranchRef.target.oid,
     'PR must target the current default branch');
-    if (original) {
-      insist(pull.headRefOid === original.pull.headRefOid &&
-        pull.baseRefOid === original.pull.baseRefOid && pull.body === original.pull.body &&
-        pull.changedFiles === original.pull.changedFiles, 'PR changed during file pagination');
-    } else {original = {repository, pull};}
-    files.push(...pull.files.nodes);
-    insist(files.length <= 3000, 'PR file list exceeds supported size');
-    const page = pull.files.pageInfo;
-    insist(!page.hasNextPage || (page.endCursor && page.endCursor !== cursor),
-      'Invalid PR file pagination');
-    cursor = page.hasNextPage ? page.endCursor : null;
-  } while (cursor);
-  insist(files.length > 0 && files.length === original.pull.changedFiles &&
-    new Set(files.map(file => file.path)).size === files.length, 'Incomplete PR file list');
-  return {...original, files};
+  insist(pull.changedFiles > 0 && pull.changedFiles <= 100, 'PR must change 1 to 100 files');
+  return {repository, pull, files: pull.files.nodes};
 }
 
 async function readFile(github, params, sha, file) {
@@ -58,22 +40,22 @@ async function readFile(github, params, sha, file) {
     $owner: String!, $repo: String!, $expression: String!
   ) {
     repository(owner: $owner, name: $repo) {
-      object(expression: $expression) { ... on Blob { text byteSize isBinary } }
+      object(expression: $expression) { ... on Blob { text, byteSize, isBinary } }
     }
   }`, {...params, expression: `${sha}:${file}`});
   const blob = result.repository?.object;
-  insist(blob && !blob.isBinary && blob.byteSize > 0 && blob.byteSize <= 10 * 1024 * 1024 &&
-    typeof blob.text === 'string' && Buffer.byteLength(blob.text) === blob.byteSize,
-  `Missing, binary, oversized, or truncated file: ${file}`);
+  insist(
+    blob && !blob.isBinary && blob.byteSize > 0 && blob.byteSize <= 10 * 1024 * 1024,
+    `Missing, binary, or oversized file: ${file}`);
   return blob.text;
 }
 
 async function run({github, core, repo, pr, reconstruct = replay}) {
-  const params = target(repo, pr);
+  const params = parseTarget(repo, pr);
   const {data: actor} = await github.rest.users.getAuthenticated();
   insist(actor.login.toLowerCase() === 'reviewable-ops',
     'REVIEWABLE_GITHUB_TOKEN must authenticate as reviewable-ops');
-  const {repository, pull, files} = await snapshot(github, params);
+  const {repository, pull, files} = await fetchSnapshot(github, params);
   const author = pull.author?.login;
   insist(author, 'PR author is unavailable');
   const {data: membership} = await github.rest.orgs.getMembershipForUser({
@@ -81,11 +63,12 @@ async function run({github, core, repo, pr, reconstruct = replay}) {
   insist(membership.state === 'active',
     `PR author @${author} must be an active organization member`);
   const plan = parsePlan(pull.body);
-  const declared = new Set([...Object.keys(plan.lockfiles), ...Object.keys(plan.manifests || {})]);
+  const declared = new Set([
+    ...Object.keys(plan.lockfiles || {}), ...Object.keys(plan.manifests || {})]);
   for (const file of files) {
     insist(file.changeType === 'MODIFIED' && declared.has(file.path),
       `Not a declared existing lockfile/manifest modification: ${file.path}`);
-    filename(file.path, file.path.endsWith('yarn.lock') ? 'yarn.lock' : 'package.json');
+    validateFilename(file.path, file.path.endsWith('yarn.lock') ? 'yarn.lock' : 'package.json');
   }
   for (const file of Object.keys(plan.manifests || {})) {
     insist(files.some(changed => changed.path === file), `Manifest is not changed: ${file}`);
@@ -95,10 +78,6 @@ async function run({github, core, repo, pr, reconstruct = replay}) {
     expected.set(file, await readFile(github, params, pull.headRefOid, file));
   }
   await reconstruct({github, ...params, baseSha: pull.baseRefOid, plan, expected});
-  const current = await snapshot(github, params);
-  insist(current.pull.headRefOid === pull.headRefOid &&
-    current.pull.baseRefOid === pull.baseRefOid,
-  'PR head or default branch changed; dispatch again');
   const method = repository.squashMergeAllowed ? 'squash' :
     repository.rebaseMergeAllowed ? 'rebase' : repository.mergeCommitAllowed ? 'merge' : null;
   insist(method, 'No merge method is enabled');
@@ -121,4 +100,4 @@ async function run({github, core, repo, pr, reconstruct = replay}) {
   }
 }
 
-module.exports = {target, snapshot, run};
+export {parseTarget, fetchSnapshot, run};

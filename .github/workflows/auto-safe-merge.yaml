@@ -53,5 +53,7 @@ jobs:
         with:
           github-token: ${{ secrets.REVIEWABLE_GITHUB_TOKEN }}
           script: |
-            const { run } = require('./auto-safe-merge');
+            const {pathToFileURL} = await import('node:url');
+            const {run} = await import(pathToFileURL(
+              `${process.env.GITHUB_WORKSPACE}/auto-safe-merge/index.js`).href);
             await run({github, core, repo: process.env.TARGET_REPO, pr: process.env.TARGET_PR});

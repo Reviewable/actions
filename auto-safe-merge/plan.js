@@ -1,10 +1,8 @@
-'use strict';
-
-const path = require('node:path').posix;
-const {isDeepStrictEqual: equal} = require('node:util');
-const {parseDocument} = require('yaml');
-const {parseSyml, stringifySyml} = require('@yarnpkg/parsers');
-const semver = require('semver');
+import {posix as path} from 'node:path';
+import {isDeepStrictEqual as equal} from 'node:util';
+import {parseDocument} from 'yaml';
+import {parseSyml, stringifySyml} from '@yarnpkg/parsers';
+import semver from 'semver';
 
 const SCHEMA = 'reviewable-dependency-updates/v1';
 
@@ -12,82 +10,87 @@ function insist(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-function mapping(value, label) {
+function requireMapping(value, label) {
   insist(value && typeof value === 'object' && !Array.isArray(value), `${label} must be a mapping`);
   return value;
 }
 
-function keys(value, allowed, label) {
-  mapping(value, label);
+function validateKeys(value, allowed, label) {
+  requireMapping(value, label);
   insist(Object.keys(value).every(key => allowed.includes(key)), `Unknown field in ${label}`);
 }
 
-function filename(value, basename) {
-  insist(typeof value === 'string' && path.basename(value) === basename &&
-    !/[\\:]/.test(value) && [...value].every(char => char.charCodeAt(0) >= 32) &&
-    !path.isAbsolute(value) &&
-    value.split('/').every(part => part && !['.', '..', '.git', 'node_modules'].includes(part)),
-  `Invalid ${basename} path: ${value}`);
+function validateFilename(value, basename) {
+  insist(
+    typeof value === 'string' && path.basename(value) === basename &&
+      !/[\\:]/.test(value) && [...value].every(char => char.charCodeAt(0) >= 32) &&
+      !path.isAbsolute(value) &&
+      value.split('/').every(part => part && !['.', '..', '.git', 'node_modules'].includes(part)),
+    `Invalid ${basename} path: ${value}`);
 }
 
-function stable(version) {
+function isStableVersion(version) {
   return typeof version === 'string' && semver.valid(version) === version &&
     !semver.prerelease(version) && !version.includes('+');
 }
 
-function compatible(before, after) {
-  return stable(before) && stable(after) && semver.gte(after, before) &&
+function isCompatible(before, after) {
+  return isStableVersion(before) && isStableVersion(after) && semver.gte(after, before) &&
     semver.satisfies(after, `^${before}`);
 }
 
-function yarnVersion(pin) {
-  const match = typeof pin === 'string' && pin.match(/^yarn@([^+]+)(?:\+sha(?:224|512)\.[a-f0-9]+)?$/);
-  insist(match && stable(match[1]) && semver.gte(match[1], '4.13.0'),
-    'Replay requires an exact Corepack Yarn pin, version 4.13.0 or later');
+function parseYarnVersion(pin) {
+  const match = typeof pin === 'string' &&
+    pin.match(/^yarn@([^+]+)(?:\+sha(?:224|512)\.[a-f0-9]+)?$/);
+  // Yarn 4.0 introduced --check-resolutions and --refresh-lockfile (hardened mode).
+  insist(match && isStableVersion(match[1]) && semver.gte(match[1], '4.0.0'),
+    'Replay requires an exact Corepack Yarn pin, version 4.0.0 or later');
   return match[1];
 }
 
-function descriptor(value) {
-  const match = value.match(/^(@[^/@\s]+\/[^@\s]+|[^@/\s]+)@npm:(?:(@[^/@\s]+\/[^@\s]+|[^@/\s]+)@)?(.+)$/);
+function parseDescriptor(value) {
+  const match = value.match(
+    /^(@[^/@\s]+\/[^@\s]+|[^@/\s]+)@npm:(?:(@[^/@\s]+\/[^@\s]+|[^@/\s]+)@)?(.+)$/);
   insist(match, `Only npm Yarn descriptors can be selected: ${value}`);
   return {name: match[2] || match[1], range: match[3]};
 }
 
-function transition(value, label, nullable = false) {
-  keys(value, ['from', 'to'], label);
+function validateTransition(value, label, nullable = false) {
+  validateKeys(value, ['from', 'to'], label);
   for (const field of ['from', 'to']) {
-    insist((nullable && value[field] === null) || stable(value[field]),
+    insist((nullable && value[field] === null) || isStableVersion(value[field]),
       `${label}.${field} must be an exact quoted stable version${nullable ? ' or null' : ''}`);
   }
   insist(value.from !== value.to, `No change declared for ${label}`);
 }
 
 function validatePlan(plan) {
-  keys(plan, ['schema', 'lockfiles', 'manifests'], 'recipe');
+  validateKeys(plan, ['schema', 'lockfiles', 'manifests'], 'recipe');
   insist(plan.schema === SCHEMA, `Expected schema: ${SCHEMA}`);
-  mapping(plan.lockfiles, 'lockfiles');
-  insist(Object.keys(plan.lockfiles).length > 0, 'At least one owning lockfile is required');
-  for (const [file, changes] of Object.entries(plan.lockfiles)) {
-    filename(file, 'yarn.lock');
-    mapping(changes, file);
+  if (plan.lockfiles !== undefined) requireMapping(plan.lockfiles, 'lockfiles');
+  for (const [file, changes] of Object.entries(plan.lockfiles || {})) {
+    validateFilename(file, 'yarn.lock');
+    requireMapping(changes, file);
     for (const [selector, change] of Object.entries(changes)) {
-      descriptor(selector);
-      transition(change, `${file}: ${selector}`, true);
+      parseDescriptor(selector);
+      validateTransition(change, `${file}: ${selector}`, true);
     }
   }
-  if (plan.manifests !== undefined) mapping(plan.manifests, 'manifests');
+  if (plan.manifests !== undefined) requireMapping(plan.manifests, 'manifests');
   for (const [file, changes] of Object.entries(plan.manifests || {})) {
-    filename(file, 'package.json');
-    keys(changes, ['version', 'packageManager'], file);
+    validateFilename(file, 'package.json');
+    validateKeys(changes, ['version', 'packageManager'], file);
     insist(Object.keys(changes).length > 0, `Empty manifest change: ${file}`);
-    if (changes.version) transition(changes.version, `${file}.version`);
+    if (changes.version) validateTransition(changes.version, `${file}.version`);
     if (changes.packageManager) {
-      keys(changes.packageManager, ['from', 'to'], `${file}.packageManager`);
+      validateKeys(changes.packageManager, ['from', 'to'], `${file}.packageManager`);
       const {from, to} = changes.packageManager;
-      insist(compatible(yarnVersion(from), yarnVersion(to)) && from !== to,
+      insist(isCompatible(parseYarnVersion(from), parseYarnVersion(to)) && from !== to,
         `Breaking or unchanged Yarn pin: ${file}`);
     }
   }
+  insist(Object.keys(plan.lockfiles || {}).length || Object.keys(plan.manifests || {}).length,
+    'At least one lockfile or manifest is required');
   return plan;
 }
 
@@ -107,14 +110,14 @@ function parsePlan(body) {
   return recipes[0];
 }
 
-function lockfile(text) {
+function parseLockfile(text) {
   const data = parseSyml(text);
   insist(data.__metadata && /^[1-9][0-9]*$/.test(String(data.__metadata.version)),
     'Only modern Yarn lockfiles can be replayed');
   const entries = new Map();
   for (const [selectors, value] of Object.entries(data)) {
     if (selectors === '__metadata') continue;
-    mapping(value, `Lock entry ${selectors}`);
+    requireMapping(value, `Lock entry ${selectors}`);
     for (const selector of selectors.split(/,\s+/)) {
       insist(!entries.has(selector), `Duplicate Yarn descriptor: ${selector}`);
       entries.set(selector, value);
@@ -123,18 +126,19 @@ function lockfile(text) {
   return {metadata: data.__metadata, entries};
 }
 
-function registryEntry(entry) {
+function parseRegistryEntry(entry) {
   const match = entry?.resolution?.match(/^(@[^/]+\/[^@]+|[^@]+)@npm:([^:]+)$/);
   return match && match[2] === entry.version ? {name: match[1], version: match[2]} : null;
 }
 
 // This also serves the agent's recipe generator. Metadata is deliberately not copied into recipes.
-function changesBetween(before, after) {
+function describeChanges(before, after) {
   const changes = {};
   for (const selector of [...new Set([...before.entries.keys(), ...after.entries.keys()])].sort()) {
     const oldEntry = before.entries.get(selector), newEntry = after.entries.get(selector);
     if (oldEntry?.version === newEntry?.version) continue;
-    insist((!oldEntry || registryEntry(oldEntry)) && (!newEntry || registryEntry(newEntry)),
+    insist(
+      (!oldEntry || parseRegistryEntry(oldEntry)) && (!newEntry || parseRegistryEntry(newEntry)),
       `Cannot declare a non-registry update: ${selector}`);
     changes[selector] = {from: oldEntry?.version ?? null, to: newEntry?.version ?? null};
   }
@@ -142,23 +146,18 @@ function changesBetween(before, after) {
 }
 
 function seedLockfile(beforeText, changes) {
-  const before = lockfile(beforeText);
+  const before = parseLockfile(beforeText);
   const seeded = new Map(before.entries);
   for (const [selector, change] of Object.entries(changes)) {
     const oldEntry = before.entries.get(selector);
     insist((oldEntry?.version ?? null) === change.from, `Stale from version: ${selector}`);
-    const {name} = descriptor(selector);
+    const {name} = parseDescriptor(selector);
     if (oldEntry) {
-      insist(registryEntry(oldEntry)?.name === name,
+      insist(parseRegistryEntry(oldEntry)?.name === name,
         `Unexpected baseline resolution: ${selector}`);
     }
     if (change.from && change.to) {
-      insist(compatible(change.from, change.to), `Breaking update or downgrade: ${selector}`);
-    } else if (change.to) {
-      const previous = [...before.entries.values()].map(registryEntry)
-        .filter(entry => entry?.name === name);
-      insist(!previous.length || previous.some(entry => compatible(entry.version, change.to)),
-        `New descriptor crosses an existing major/0.x boundary: ${selector}`);
+      insist(semver.gte(change.to, change.from), `Dependency downgrade: ${selector}`);
     }
     if (change.to === null) {seeded.delete(selector);} else {
       // Yarn replaces this seed with registry metadata and computes the archive checksum.
@@ -171,9 +170,30 @@ function seedLockfile(beforeText, changes) {
 }
 
 function verifyLockfile(beforeText, actualText, expectedText, changes, file) {
-  insist(equal(changesBetween(lockfile(beforeText), lockfile(actualText)), changes),
+  const before = parseLockfile(beforeText), actual = parseLockfile(actualText);
+  validateDirectUpdates(before, actual);
+  insist(equal(describeChanges(before, actual), changes),
     `Recipe does not describe all generated version changes: ${file}`);
   insist(actualText === expectedText, `Replayed lockfile does not exactly match the PR: ${file}`);
+}
+
+function validateDirectUpdates(before, after) {
+  // Yarn records each workspace's direct dependencies (including dev/optional) in its entry.
+  // Compare descriptors, not package names: another copy may be solely transitive.
+  for (const workspace of before.entries.values()) {
+    if (!workspace.resolution.includes('@workspace:')) continue;
+    for (const [name, range] of Object.entries(workspace.dependencies || {})) {
+      const selector = `${name}@${range}`;
+      const oldEntry = parseRegistryEntry(before.entries.get(selector));
+      if (!oldEntry) continue;
+      const newEntry = parseRegistryEntry(after.entries.get(selector));
+      if (equal(oldEntry, newEntry)) continue;
+      insist(
+        newEntry && newEntry.name === oldEntry.name &&
+          isCompatible(oldEntry.version, newEntry.version),
+        `Breaking direct dependency update or removal: ${selector}`);
+    }
+  }
 }
 
 function applyManifest(beforeText, changes, file) {
@@ -199,5 +219,6 @@ function applyManifest(beforeText, changes, file) {
   return result;
 }
 
-module.exports = {SCHEMA, insist, filename, compatible, yarnVersion, validatePlan, parsePlan,
-  lockfile, changesBetween, seedLockfile, verifyLockfile, applyManifest};
+export {SCHEMA, insist, validateFilename, isCompatible, parseYarnVersion, validatePlan,
+  parsePlan, parseLockfile, describeChanges, seedLockfile, verifyLockfile, validateDirectUpdates,
+  applyManifest};

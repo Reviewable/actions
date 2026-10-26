@@ -1,13 +1,12 @@
-'use strict';
-
 // Read-only agent helper. --verify reconstructs in a disposable directory, never in the checkout.
-const path = require('node:path');
-const {execFileSync} = require('node:child_process');
-const {SCHEMA, insist, filename, validatePlan, lockfile, changesBetween, seedLockfile,
-  applyManifest} = require('./plan');
-const {replay} = require('./replay');
+import path from 'node:path';
+import {pathToFileURL} from 'node:url';
+import {execFileSync} from 'node:child_process';
+import {SCHEMA, insist, validateFilename, validatePlan, parseLockfile, describeChanges,
+  seedLockfile, validateDirectUpdates, applyManifest} from './plan.js';
+import {replay} from './replay.js';
 
-function describe(root, base, head) {
+function describeUpdates(root, base, head) {
   const git = args => execFileSync('git', args, {cwd: root, encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024, windowsHide: true});
   const read = (ref, file) => git(['show', `${ref}:${file}`]);
@@ -18,11 +17,13 @@ function describe(root, base, head) {
     const [status, file] = line.split('\t');
     insist(status === 'M' && /(?:^|\/)(yarn.lock|package.json)$/.test(file),
       `Unsupported PR change: ${line}`);
-    filename(file, path.posix.basename(file));
+    validateFilename(file, path.posix.basename(file));
     const before = read(base, file), after = read(head, file);
     expected.set(file, after);
     if (file.endsWith('yarn.lock')) {
-      plan.lockfiles[file] = changesBetween(lockfile(before), lockfile(after));
+      const oldLock = parseLockfile(before), newLock = parseLockfile(after);
+      validateDirectUpdates(oldLock, newLock);
+      plan.lockfiles[file] = describeChanges(oldLock, newLock);
       seedLockfile(before, plan.lockfiles[file]);
     } else {
       const oldManifest = JSON.parse(before), newManifest = JSON.parse(after);
@@ -35,27 +36,15 @@ function describe(root, base, head) {
       insist(Object.keys(edits).length && applyManifest(before, edits, file) === after,
         `Unsupported manifest edit: ${file}`);
       plan.manifests[file] = edits;
-      let directory = path.posix.dirname(file);
-      while (true) {
-        const lock = path.posix.join(directory, 'yarn.lock');
-        try {
-          const beforeLock = read(base, lock), afterLock = read(head, lock);
-          plan.lockfiles[lock] = changesBetween(lockfile(beforeLock), lockfile(afterLock));
-          expected.set(lock, afterLock);
-          break;
-        } catch (error) {
-          if (directory === '.') throw error;
-          directory = path.posix.dirname(directory);
-        }
-      }
     }
   }
   if (!Object.keys(plan.manifests).length) delete plan.manifests;
+  if (!Object.keys(plan.lockfiles).length) delete plan.lockfiles;
   validatePlan(plan);
   return {plan, expected};
 }
 
-function format(plan) {
+function formatPlan(plan) {
   const value = item => item === null ? 'null' : JSON.stringify(item);
   const lines = ['```yaml', `schema: ${SCHEMA}`];
   for (const section of ['lockfiles', 'manifests']) {
@@ -76,21 +65,21 @@ async function main() {
   const [root, base = 'origin/master', head = 'HEAD', flag] = process.argv.slice(2);
   insist(root && (!flag || flag === '--verify'),
     'Usage: node describe.js CHECKOUT [BASE_REF] [HEAD_REF] [--verify]');
-  const {plan, expected} = describe(root, base, head);
+  const {plan, expected} = describeUpdates(root, base, head);
   if (flag) {
     const data = execFileSync('git', ['archive', '--format=tar', '--prefix=repository/', base],
       {cwd: root, maxBuffer: 128 * 1024 * 1024, windowsHide: true});
     const github = {rest: {repos: {downloadTarballArchive: async () => ({data})}}};
     await replay({github, baseSha: base, plan, expected});
   }
-  process.stdout.write(format(plan) + '\n');
+  process.stdout.write(formatPlan(plan) + '\n');
 }
 
-if (require.main === module) {
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   main().catch(error => {
     process.stderr.write(error.message + '\n');
     process.exitCode = 1;
   });
 }
 
-module.exports = {describe, format};
+export {describeUpdates, formatPlan};

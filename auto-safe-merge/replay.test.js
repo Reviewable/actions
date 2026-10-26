@@ -1,25 +1,23 @@
-'use strict';
-
-const {test} = require('node:test');
-const assert = require('node:assert/strict');
-const fs = require('node:fs/promises');
-const path = require('node:path');
-const os = require('node:os');
-const http = require('node:http');
-const crypto = require('node:crypto');
-const tar = require('tar');
-const {SCHEMA, lockfile, changesBetween, seedLockfile} = require('./plan');
-const {runYarn, reconstruct, replayEnvironment} = require('./replay');
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import http from 'node:http';
+import crypto from 'node:crypto';
+import * as tar from 'tar';
+import {SCHEMA, parseLockfile, describeChanges, seedLockfile} from './plan.js';
+import {runYarn, reconstruct, createReplayEnvironment} from './replay.js';
 
 test('replay children receive no GitHub credentials or arbitrary Node options', () => {
-  const env = replayEnvironment('/scratch');
+  const env = createReplayEnvironment('/scratch');
   assert.equal(env.NODE_OPTIONS, undefined);
   assert.equal(env.GITHUB_TOKEN, undefined);
   assert.equal(env.REVIEWABLE_GITHUB_TOKEN, undefined);
   assert.equal(env.YARN_ENABLE_SCRIPTS, 'false');
 });
 
-test('real Corepack Yarn replay: transitive changes, aliases, additions and future releases',
+test('real Corepack Yarn replay: transitive majors, aliases, additions and future releases',
   {timeout: 180000}, async t => {
     const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'yarn-replay-test-'));
     t.after(() => fs.rm(scratch, {recursive: true, force: true}));
@@ -60,17 +58,21 @@ test('real Corepack Yarn replay: transitive changes, aliases, additions and futu
     for (const [version, release] of [['1.0.0', 0], ['1.1.0', 1], ['1.2.0', 2]]) {
       await publish('leaf', version, release, {scripts: {postinstall: 'exit 42'}});
     }
+    await publish('leaf', '2.0.0', 1);
+    await publish('broad', '1.0.0', 0);
+    await publish('broad', '2.0.0', 1);
     await publish('obsolete', '1.0.0', 0);
     await publish('zero', '0.2.0', 0);
     await publish('zero', '0.2.1', 1);
     await publish('platform', '1.0.0', 0, {os: ['darwin']});
     await publish('platform', '1.0.1', 1, {os: ['darwin']});
-    await publish('parent', '1.0.0', 0, {dependencies: {leaf: '^1.0.0', obsolete: '^1.0.0'}});
-    await publish('parent', '1.1.0', 1, {dependencies: {leaf: '~1.1.0'}});
+    await publish('parent', '1.0.0', 0,
+      {dependencies: {leaf: '^1.0.0', obsolete: '^1.0.0', broad: '*'}});
+    await publish('parent', '1.1.0', 1, {dependencies: {leaf: '^2.0.0', broad: '*'}});
     const manifest = JSON.stringify({name: 'fixture', version: '1.0.0', private: true,
       packageManager: 'yarn@4.13.0', dependencies: {parent: '^1.0.0', alias: 'npm:leaf@^1.0.0',
         pinned: 'npm:leaf@~1.0.0', zero: '^0.2.0'}, optionalDependencies: {platform: '^1.0.0'}});
-    async function project(name, lock) {
+    async function createProject(name, lock) {
       const root = path.join(scratch, name);
       await fs.mkdir(root);
       await fs.writeFile(path.join(root, 'package.json'), manifest);
@@ -80,19 +82,20 @@ test('real Corepack Yarn replay: transitive changes, aliases, additions and futu
       if (lock) await fs.writeFile(path.join(root, 'yarn.lock'), lock);
       return root;
     }
-    const baselineRoot = await project('baseline');
+    const baselineRoot = await createProject('baseline');
     await runYarn({cwd: baselineRoot, pin: 'yarn@4.13.0', scratch});
     const before = await fs.readFile(path.join(baselineRoot, 'yarn.lock'), 'utf8');
     stage = 1;
-    const expectedRoot = await project('expected');
+    const expectedRoot = await createProject('expected');
     await runYarn({cwd: expectedRoot, pin: 'yarn@4.13.0', scratch});
     const after = await fs.readFile(path.join(expectedRoot, 'yarn.lock'), 'utf8');
-    const changes = changesBetween(lockfile(before), lockfile(after));
+    const changes = describeChanges(parseLockfile(before), parseLockfile(after));
     assert.deepEqual(changes['obsolete@npm:^1.0.0'], {from: '1.0.0', to: null});
-    assert.deepEqual(changes['leaf@npm:~1.1.0'], {from: null, to: '1.1.0'});
+    assert.deepEqual(changes['leaf@npm:^2.0.0'], {from: null, to: '2.0.0'});
+    assert.deepEqual(changes['broad@npm:*'], {from: '1.0.0', to: '2.0.0'});
     const plan = {schema: SCHEMA, lockfiles: {'yarn.lock': changes}};
     stage = 2;
-    const root = await project('replay', before);
+    const root = await createProject('replay', before);
     const expected = new Map([['yarn.lock', after]]);
     try {
       await reconstruct({root, scratch, plan, expected});
@@ -104,10 +107,10 @@ test('real Corepack Yarn replay: transitive changes, aliases, additions and futu
       JSON.parse(manifest));
     assert.equal(await fs.stat(path.join(root, 'node_modules')).catch(() => null), null);
     // A syntactically valid but out-of-range resolution must fail Yarn's native check.
-    const invalid = await project('invalid', seedLockfile(before, {
+    const invalid = await createProject('invalid', seedLockfile(before, {
       'pinned@npm:leaf@~1.0.0': {from: '1.0.0', to: '1.1.0'}}));
     await assert.rejects(runYarn({cwd: invalid, pin: 'yarn@4.13.0', scratch}), /YN0078/);
-    const tampered = await project('tampered', before);
+    const tampered = await createProject('tampered', before);
     expected.set('yarn.lock', after.replace(/checksum: [^\n]+/, 'checksum: bad'));
     await assert.rejects(reconstruct({root: tampered, scratch, plan, expected}), /exactly match/);
 
@@ -118,20 +121,20 @@ test('real Corepack Yarn replay: transitive changes, aliases, additions and futu
     bundled.version = '1.0.1';
     bundled.packageManager = 'yarn@4.18.1';
     const newManifest = JSON.stringify(bundled, null, 2) + '\n';
-    const metadataExpected = await project('metadata-expected', after);
+    const metadataExpected = await createProject('metadata-expected', after);
     await fs.writeFile(path.join(metadataExpected, 'package.json'), newManifest);
     await runYarn({cwd: metadataExpected, pin: bundled.packageManager, scratch});
     const newLock = await fs.readFile(path.join(metadataExpected, 'yarn.lock'), 'utf8');
-    const metadataRoot = await project('metadata-replay', before);
+    const metadataRoot = await createProject('metadata-replay', before);
     await fs.writeFile(path.join(metadataRoot, 'package.json'), originalManifest);
-    const nested = await project('nested', before);
+    const nested = await createProject('nested', before);
     const nestedManifest = JSON.stringify(JSON.parse(
       await fs.readFile(path.join(baselineRoot, 'package.json'), 'utf8')), null, 2) + '\n';
     await fs.writeFile(path.join(nested, 'package.json'), nestedManifest);
     await fs.rename(nested, path.join(metadataRoot, 'tools'));
     const metadataPlan = {schema: SCHEMA, lockfiles: {
-      'yarn.lock': changesBetween(lockfile(before), lockfile(newLock)),
-      'tools/yarn.lock': changesBetween(lockfile(before), lockfile(newLock)),
+      'yarn.lock': describeChanges(parseLockfile(before), parseLockfile(newLock)),
+      'tools/yarn.lock': describeChanges(parseLockfile(before), parseLockfile(newLock)),
     }, manifests: {'package.json': {
       version: {from: '1.0.0', to: '1.0.1'},
       packageManager: {from: 'yarn@4.13.0', to: 'yarn@4.18.1'},
@@ -142,4 +145,61 @@ test('real Corepack Yarn replay: transitive changes, aliases, additions and futu
       expected: new Map([['yarn.lock', newLock], ['tools/yarn.lock', newLock],
         ['package.json', newManifest], ['tools/package.json',
           nestedManifest.replace('yarn@4.13.0', 'yarn@4.18.1')]])});
+
+    // Exercise the minimum CLI version against its own native checksum formatting.
+    const minimum = await createProject('minimum', before);
+    const minimumManifest = manifest.replace('yarn@4.13.0', 'yarn@4.0.0');
+    await fs.writeFile(path.join(minimum, 'package.json'), minimumManifest);
+    await runYarn({cwd: minimum, pin: 'yarn@4.0.0', scratch});
+    const minimumExpected = await createProject('minimum-expected', after);
+    await fs.writeFile(path.join(minimumExpected, 'package.json'), minimumManifest);
+    await runYarn({cwd: minimumExpected, pin: 'yarn@4.0.0', scratch});
+    const minimumAfter = await fs.readFile(path.join(minimumExpected, 'yarn.lock'), 'utf8');
+    await reconstruct({root: minimum, scratch, plan,
+      expected: new Map([['yarn.lock', minimumAfter]])});
+    const minimumInvalid = await createProject('minimum-invalid', seedLockfile(minimumAfter, {
+      'pinned@npm:leaf@~1.0.0': {from: '1.0.0', to: '1.1.0'}}));
+    await fs.writeFile(path.join(minimumInvalid, 'package.json'), minimumManifest);
+    await assert.rejects(runYarn({cwd: minimumInvalid, pin: 'yarn@4.0.0', scratch}), /YN0078/);
+
+    // Pin-only updates still verify that their omitted lockfile remains unchanged.
+    const pinRoot = await createProject('pin-only', newLock);
+    const pinBeforeManifest = manifest.replace('yarn@4.13.0', 'yarn@4.18.0');
+    await fs.writeFile(path.join(pinRoot, 'package.json'), pinBeforeManifest);
+    await runYarn({cwd: pinRoot, pin: 'yarn@4.18.0', scratch});
+    const pinManifest = await fs.readFile(path.join(pinRoot, 'package.json'), 'utf8');
+    const pinBeforeLock = await fs.readFile(path.join(pinRoot, 'yarn.lock'), 'utf8');
+    const pinOnly = {schema: SCHEMA, manifests: {'package.json': {
+      packageManager: {from: 'yarn@4.18.0', to: 'yarn@4.18.1'}}}};
+    await reconstruct({root: pinRoot, scratch, plan: pinOnly,
+      expected: new Map([['package.json', pinManifest.replace('yarn@4.18.0', 'yarn@4.18.1')]])});
+    assert.equal(await fs.readFile(path.join(pinRoot, 'yarn.lock'), 'utf8'), pinBeforeLock);
+    const minimumBeforePin = await fs.readFile(path.join(minimum, 'package.json'), 'utf8');
+    await assert.rejects(
+      reconstruct({root: minimum, scratch,
+        plan: {schema: SCHEMA, manifests: {'package.json': {
+          packageManager: {from: 'yarn@4.0.0', to: 'yarn@4.13.0'}}}},
+        expected: new Map([
+          ['package.json', minimumBeforePin.replace('yarn@4.0.0', 'yarn@4.13.0')]])}),
+      /exactly match/);
+
+    // The same broad transitive descriptor becomes direct when a workspace devDependency uses it.
+    stage = 0;
+    const workspaceRoot = await createProject('workspace');
+    const workspaceManifest = JSON.stringify({...JSON.parse(manifest), workspaces: ['packages/*']});
+    await fs.writeFile(path.join(workspaceRoot, 'package.json'), workspaceManifest);
+    await fs.mkdir(path.join(workspaceRoot, 'packages/child'), {recursive: true});
+    await fs.writeFile(path.join(workspaceRoot, 'packages/child/package.json'),
+      JSON.stringify({name: 'child', version: '1.0.0', devDependencies: {broad: '*'}}));
+    await runYarn({cwd: workspaceRoot, pin: 'yarn@4.13.0', scratch});
+    const workspaceBefore = await fs.readFile(path.join(workspaceRoot, 'yarn.lock'), 'utf8');
+    stage = 1;
+    await fs.writeFile(path.join(workspaceRoot, 'yarn.lock'), '');
+    await runYarn({cwd: workspaceRoot, pin: 'yarn@4.13.0', scratch});
+    const workspaceAfter = await fs.readFile(path.join(workspaceRoot, 'yarn.lock'), 'utf8');
+    await fs.writeFile(path.join(workspaceRoot, 'yarn.lock'), workspaceBefore);
+    await assert.rejects(reconstruct({root: workspaceRoot, scratch,
+      plan: {schema: SCHEMA, lockfiles: {'yarn.lock':
+        describeChanges(parseLockfile(workspaceBefore), parseLockfile(workspaceAfter))}},
+      expected: new Map([['yarn.lock', workspaceAfter]])}), /Breaking direct.*broad/);
   });

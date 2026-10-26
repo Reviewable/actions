@@ -1,17 +1,14 @@
-'use strict';
-
-const fs = require('node:fs/promises');
-const path = require('node:path');
-const os = require('node:os');
-const {execFile} = require('node:child_process');
-const {promisify} = require('node:util');
-const {isDeepStrictEqual: equal} = require('node:util');
-const tar = require('tar');
-const {insist, yarnVersion, seedLockfile, verifyLockfile, applyManifest} = require('./plan');
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import {execFile} from 'node:child_process';
+import {promisify, isDeepStrictEqual as equal} from 'node:util';
+import * as tar from 'tar';
+import {insist, parseYarnVersion, seedLockfile, verifyLockfile, applyManifest} from './plan.js';
 
 const execute = promisify(execFile);
 
-async function regularFile(root, name) {
+async function resolveRegularFile(root, name) {
   const file = path.resolve(root, name);
   insist(file.startsWith(root + path.sep), `Path escapes checkout: ${name}`);
   let current = root;
@@ -23,7 +20,7 @@ async function regularFile(root, name) {
   return file;
 }
 
-function replayEnvironment(scratch) {
+function createReplayEnvironment(scratch) {
   // No GitHub credentials, NODE_OPTIONS, or package-manager overrides reach the child process.
   const env = {};
   for (const key of ['PATH', 'Path', 'SystemRoot', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP']) {
@@ -41,7 +38,7 @@ function replayEnvironment(scratch) {
 }
 
 async function runYarn({cwd, pin, scratch, immutable = false}) {
-  yarnVersion(pin);
+  parseYarnVersion(pin);
   const args = [pin, 'install', '--mode=update-lockfile',
     '--check-resolutions', '--refresh-lockfile'];
   // Yarn forbids --immutable with update-lockfile. Compare bytes without linking/building.
@@ -53,7 +50,7 @@ async function runYarn({cwd, pin, scratch, immutable = false}) {
       'node_modules/corepack/dist/corepack.js'));
   }
   try {
-    const result = await execute(command, args, {cwd, env: replayEnvironment(scratch),
+    const result = await execute(command, args, {cwd, env: createReplayEnvironment(scratch),
       timeout: 5 * 60 * 1000, maxBuffer: 4 * 1024 * 1024, windowsHide: true});
     insist(!immutable || before === await fs.readFile(path.join(cwd, 'yarn.lock'), 'utf8'),
       'Yarn changed the reconstructed lockfile on validation');
@@ -67,23 +64,27 @@ async function runYarn({cwd, pin, scratch, immutable = false}) {
 async function reconstruct({root, scratch, plan, expected, yarn = runYarn}) {
   root = path.resolve(root);
   const originals = new Map();
-  const projects = Object.keys(plan.lockfiles).map(file => path.posix.dirname(file));
+  const lockfiles = {...plan.lockfiles};
+  expected = new Map(expected);
   for (const [file, changes] of Object.entries(plan.manifests || {})) {
-    const manifest = await regularFile(root, file);
-    // A workspace publication bump belongs to its nearest owning lockfile.
+    const manifest = await resolveRegularFile(root, file);
+    // Manifest-only recipes omit unchanged locks; still replay their owning project.
     let directory = path.posix.dirname(file);
-    while (!projects.includes(directory)) {
-      insist(directory !== '.', `No owning lockfile declared for ${file}`);
-      insist(!(await fs.stat(path.join(root, directory, 'yarn.lock')).catch(() => null)),
-        `Owning lockfile omitted for ${file}`);
+    while (!(await fs.stat(path.join(root, directory, 'yarn.lock')).catch(() => null))) {
+      insist(directory !== '.', `No owning lockfile found for ${file}`);
       directory = path.posix.dirname(directory);
+    }
+    const lock = path.posix.join(directory, 'yarn.lock');
+    if (!Object.hasOwn(lockfiles, lock)) {
+      lockfiles[lock] = {};
+      expected.set(lock, await fs.readFile(await resolveRegularFile(root, lock), 'utf8'));
     }
     const updated = applyManifest(await fs.readFile(manifest, 'utf8'), changes, file);
     insist(updated === expected.get(file), `Manifest contains undeclared changes: ${file}`);
     await fs.writeFile(manifest, updated);
   }
-  for (const [file, changes] of Object.entries(plan.lockfiles)) {
-    const lock = await regularFile(root, file);
+  for (const [file, changes] of Object.entries(lockfiles)) {
+    const lock = await resolveRegularFile(root, file);
     const before = await fs.readFile(lock, 'utf8');
     originals.set(file, before);
     await fs.writeFile(lock, seedLockfile(before, changes));
@@ -101,15 +102,15 @@ async function reconstruct({root, scratch, plan, expected, yarn = runYarn}) {
     }
   }
   await rememberManifests(root);
-  for (const file of Object.keys(plan.lockfiles)) {
+  for (const file of Object.keys(lockfiles)) {
     const cwd = path.join(root, path.posix.dirname(file));
-    const manifest = JSON.parse(await fs.readFile(await regularFile(root,
+    const manifest = JSON.parse(await fs.readFile(await resolveRegularFile(root,
       path.posix.join(path.posix.dirname(file), 'package.json')), 'utf8'));
-    yarnVersion(manifest.packageManager);
+    parseYarnVersion(manifest.packageManager);
     await yarn({cwd, pin: manifest.packageManager, scratch});
     await yarn({cwd, pin: manifest.packageManager, scratch, immutable: true});
   }
-  for (const [file, changes] of Object.entries(plan.lockfiles)) {
+  for (const [file, changes] of Object.entries(lockfiles)) {
     verifyLockfile(originals.get(file), await fs.readFile(path.join(root, file), 'utf8'),
       expected.get(file), changes, file);
   }
@@ -145,4 +146,4 @@ async function replay({github, owner, repo, baseSha, plan, expected}) {
   }
 }
 
-module.exports = {replayEnvironment, runYarn, reconstruct, replay};
+export {createReplayEnvironment, runYarn, reconstruct, replay};
