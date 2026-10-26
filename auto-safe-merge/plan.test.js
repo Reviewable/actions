@@ -2,7 +2,8 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {stringifySyml} from '@yarnpkg/parsers';
 import {SCHEMA, parsePlan, validatePlan, isCompatible, parseYarnVersion, seedLockfile,
-  parseLockfile, verifyLockfile, validateDirectUpdates, applyManifest} from './plan.js';
+  parseLockfile, describeChanges, verifyLockfile, validateDirectUpdates, applyManifest
+} from './plan.js';
 import {formatPlan} from './describe.js';
 
 const baseline = stringifySyml({__metadata: {version: 8, cacheKey: '10c0'},
@@ -92,6 +93,38 @@ test('Yarn pins require the CLI features introduced in 4.0', () => {
   assert.equal(parseYarnVersion('yarn@4.13.0+sha224.abcdef'), '4.13.0');
   assert.throws(() => parseYarnVersion('yarn@3.8.7'), /4.0.0/);
   assert.throws(() => parseYarnVersion('yarn@latest'), /exact/);
+});
+
+test('built-in patches derive from npm updates and retain direct semver checks', () => {
+  for (const name of ['resolve', 'typescript', 'fsevents']) {
+    const source = `${name}@npm:*`;
+    const selector = `${name}@patch:${name}@npm%3A*#optional!builtin<compat/${name}>`;
+    const createLock = version => stringifySyml({__metadata: {version: 8},
+      'root@workspace:.': {version: '0.0.0-use.local', resolution: 'root@workspace:.',
+        dependencies: {[name]: selector.slice(name.length + 1)}},
+      [source]: {version, resolution: `${name}@npm:${version}`},
+      [selector]: {version, resolution:
+        `${name}@patch:${name}@npm%3A${version}#optional!builtin<compat/${name}>` +
+        `::version=${version}&hash=abcdef`},
+    });
+    const before = createLock('1.0.0'), after = createLock('1.1.0');
+    const changes = {[source]: {from: '1.0.0', to: '1.1.0'}};
+    assert.deepEqual(describeChanges(parseLockfile(before), parseLockfile(after)), changes);
+    assert.equal(parseLockfile(seedLockfile(before, changes)).entries.has(selector), false);
+    assert.doesNotThrow(() => verifyLockfile(before, after, after, changes, 'yarn.lock'));
+    assert.throws(() => validateDirectUpdates(
+      parseLockfile(before), parseLockfile(createLock('2.0.0'))),
+    /Breaking direct/);
+    const mismatched = parseLockfile(after);
+    mismatched.entries.get(selector).version = '2.0.0';
+    assert.throws(() => describeChanges(parseLockfile(before), mismatched), /match its npm source/);
+    const customBefore = before.replaceAll(`optional!builtin<compat/${name}>`, './local.patch');
+    const customAfter = after.replaceAll(`optional!builtin<compat/${name}>`, './local.patch');
+    assert.throws(() => describeChanges(parseLockfile(customBefore), parseLockfile(customAfter)),
+      /non-registry update/);
+    assert.throws(() => verifyLockfile(before, after, after + '# tampered patch\n', changes,
+      'yarn.lock'), /exactly match/);
+  }
 });
 
 test('direct non-registry entries are present, while a missing baseline entry is invalid', () => {

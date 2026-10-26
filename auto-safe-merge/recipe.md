@@ -35,6 +35,8 @@ manifests:
 - Direct dependencies must stay compatible, including workspace dev and optional
   dependencies. Transitive updates may cross major versions when their parents'
   ranges allow them; Yarn validates every resolution during replay.
+- Yarn derives its built-in TypeScript, resolve, and fsevents compatibility patches
+  from the matching npm descriptors. List the npm updates only, not patch selectors.
 - Manifest entries describe only an allowed publication patch bump or exact
   compatible Corepack pin update. Dependency ranges, bundle flags, engines, and
   all other fields remain unchanged. Include the owning lockfile only if it changes.

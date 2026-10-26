@@ -16,6 +16,7 @@ on:
 permissions: {}
 
 concurrency:
+  # GitHub concurrency group names are case-insensitive, including repository inputs.
   group: auto-safe-merge-${{ inputs.repo }}-${{ inputs.pr }}
   cancel-in-progress: false
 
@@ -43,7 +44,7 @@ jobs:
           YARN_ENABLE_SCRIPTS: 'false'
         run: |
           corepack enable
-          yarn install --immutable --mode=skip-build
+          yarn workspaces focus --production
 
       - name: Reconstruct, merge, and confirm
         uses: actions/github-script@v8

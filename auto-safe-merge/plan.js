@@ -131,12 +131,28 @@ function parseRegistryEntry(entry) {
   return match && match[2] === entry.version ? {name: match[1], version: match[2]} : null;
 }
 
+function builtinPatchSource(selector) {
+  const match = selector.match(
+    /^(fsevents|resolve|typescript)@patch:\1@(npm%3A[^#]+)#optional!builtin<compat\/\1>$/);
+  return match ? `${match[1]}@${decodeURIComponent(match[2])}` : null;
+}
+
 // This also serves the agent's recipe generator. Metadata is deliberately not copied into recipes.
 function describeChanges(before, after) {
   const changes = {};
   for (const selector of [...new Set([...before.entries.keys(), ...after.entries.keys()])].sort()) {
     const oldEntry = before.entries.get(selector), newEntry = after.entries.get(selector);
     if (oldEntry?.version === newEntry?.version) continue;
+    const source = builtinPatchSource(selector);
+    if (source) {
+      // Yarn derives these entries; only the underlying npm update belongs in the recipe.
+      for (const lock of [before, after]) {
+        const entry = lock.entries.get(selector);
+        insist(!entry || parseRegistryEntry(lock.entries.get(source))?.version === entry.version,
+          `Built-in patch does not match its npm source: ${selector}`);
+      }
+      continue;
+    }
     insist(
       (!oldEntry || parseRegistryEntry(oldEntry)) && (!newEntry || parseRegistryEntry(newEntry)),
       `Cannot declare a non-registry update: ${selector}`);
@@ -165,6 +181,11 @@ function seedLockfile(beforeText, changes) {
         languageName: 'node', linkType: 'hard'});
     }
   }
+  // Never retain a stale compatibility wrapper after seeding its underlying npm resolution.
+  // The selected Yarn supplies the patch and regenerates its metadata and checksum.
+  for (const selector of seeded.keys()) {
+    if (builtinPatchSource(selector)) seeded.delete(selector);
+  }
   const text = stringifySyml({__metadata: before.metadata, ...Object.fromEntries(seeded)});
   return beforeText.includes('\r\n') ? text.replace(/\n/g, '\r\n') : text;
 }
@@ -186,11 +207,13 @@ function validateDirectUpdates(before, after) {
       const selector = `${name}@${range}`;
       const baselineEntry = before.entries.get(selector);
       insist(baselineEntry, `Missing direct dependency in baseline lockfile: ${selector}`);
-      // Workspace, Git, patch, and other non-registry entries also exist in the lockfile.
-      // They are outside this npm-version check; recipes cannot select their updates.
-      const oldEntry = parseRegistryEntry(baselineEntry);
+      // Built-in patches inherit compatibility from their npm source. Other non-registry
+      // entries cannot be selected by recipes and remain outside this npm-version check.
+      const source = builtinPatchSource(selector) || selector;
+      const oldEntry = parseRegistryEntry(before.entries.get(source));
+      insist(source === selector || oldEntry, `Missing built-in patch source: ${selector}`);
       if (!oldEntry) continue;
-      const newEntry = parseRegistryEntry(after.entries.get(selector));
+      const newEntry = after.entries.has(selector) && parseRegistryEntry(after.entries.get(source));
       if (equal(oldEntry, newEntry)) continue;
       insist(
         newEntry && newEntry.name === oldEntry.name &&

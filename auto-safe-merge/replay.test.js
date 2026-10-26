@@ -17,6 +17,42 @@ test('replay children receive no GitHub credentials or arbitrary Node options', 
   assert.equal(env.YARN_ENABLE_SCRIPTS, 'false');
 });
 
+test('real Yarn compatibility patches replay from their underlying npm selections',
+  {timeout: 180000}, async t => {
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'yarn-patches-test-'));
+    t.after(() => fs.rm(scratch, {recursive: true, force: true}));
+    const versions = {resolve: ['1.22.10', '1.22.11'], typescript: ['5.4.4', '5.4.5'],
+      fsevents: ['2.3.2', '2.3.3']};
+    const manifest = JSON.stringify({name: 'patch-fixture', private: true,
+      packageManager: 'yarn@4.13.0', dependencies: {resolve: '^1.22.10'},
+      devDependencies: {typescript: '^5.4.4'}, optionalDependencies: {fsevents: '^2.3.2'}});
+    async function project(name, stage) {
+      const root = path.join(scratch, name);
+      await fs.mkdir(root);
+      await fs.writeFile(path.join(root, 'package.json'), manifest);
+      await fs.writeFile(path.join(root, '.yarnrc.yml'), 'nodeLinker: node-modules\n');
+      const selections = Object.fromEntries(Object.entries(versions).map(([pkg, pair]) =>
+        [`${pkg}@npm:^${pair[0]}`, {from: null, to: pair[stage]}]));
+      await fs.writeFile(path.join(root, 'yarn.lock'),
+        seedLockfile('__metadata:\n  version: 8\n', selections));
+      await runYarn({cwd: root, pin: 'yarn@4.13.0', scratch});
+      return root;
+    }
+    const root = await project('baseline', 0);
+    const expectedRoot = await project('expected', 1);
+    const before = await fs.readFile(path.join(root, 'yarn.lock'), 'utf8');
+    const after = await fs.readFile(path.join(expectedRoot, 'yarn.lock'), 'utf8');
+    const changes = describeChanges(parseLockfile(before), parseLockfile(after));
+    assert.equal(Object.keys(changes).some(selector => selector.includes('@patch:')), false);
+    for (const [name, [from, to]] of Object.entries(versions)) {
+      assert.deepEqual(changes[`${name}@npm:^${from}`], {from, to});
+      const wrapper = `${name}@patch:${name}@npm%3A^${from}#optional!builtin<compat/${name}>`;
+      assert.equal(parseLockfile(after).entries.get(wrapper).version, to);
+    }
+    await reconstruct({root, scratch, plan: {schema: SCHEMA, lockfiles: {'yarn.lock': changes}},
+      expected: new Map([['yarn.lock', after]])});
+  });
+
 test('real Corepack Yarn replay: transitive majors, aliases, additions and future releases',
   {timeout: 180000}, async t => {
     const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'yarn-replay-test-'));

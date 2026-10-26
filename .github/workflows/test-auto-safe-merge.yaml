@@ -26,3 +26,10 @@ jobs:
         working-directory: auto-safe-merge
       - run: yarn test
         working-directory: auto-safe-merge
+      - name: Verify production-only entrypoint
+        working-directory: auto-safe-merge
+        env:
+          YARN_ENABLE_SCRIPTS: 'false'
+        run: |
+          yarn workspaces focus --production
+          node --input-type=module -e "await import('./index.js')"

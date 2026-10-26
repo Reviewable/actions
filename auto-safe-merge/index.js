@@ -36,18 +36,14 @@ async function fetchSnapshot(github, params) {
 }
 
 async function readFile(github, params, sha, file) {
-  const result = await github.graphql(`query(
-    $owner: String!, $repo: String!, $expression: String!
-  ) {
-    repository(owner: $owner, name: $repo) {
-      object(expression: $expression) { ... on Blob { text, byteSize, isBinary } }
-    }
-  }`, {...params, expression: `${sha}:${file}`});
-  const blob = result.repository?.object;
+  // GraphQL Blob.text truncates large lockfiles. REST raw content preserves their bytes.
+  const {data} = await github.rest.repos.getContent({owner: params.owner, repo: params.repo,
+    ref: sha, path: file, mediaType: {format: 'raw'}});
   insist(
-    blob && !blob.isBinary && blob.byteSize > 0 && blob.byteSize <= 10 * 1024 * 1024,
+    typeof data === 'string' && data.length > 0 && !data.includes('\0') &&
+      Buffer.byteLength(data) <= 10 * 1024 * 1024,
     `Missing, binary, or oversized file: ${file}`);
-  return blob.text;
+  return data;
 }
 
 async function run({github, core, repo, pr, reconstruct = replay}) {

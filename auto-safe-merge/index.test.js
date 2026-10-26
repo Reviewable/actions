@@ -8,13 +8,12 @@ import {run} from './index.js';
 function createFixture() {
   const calls = [];
   const state = {actor: 'reviewable-ops', membership: 'active', head: 'head', base: 'base',
-    file: 'yarn.lock', changeType: 'MODIFIED', merge: true, fileCount: 1};
+    file: 'yarn.lock', changeType: 'MODIFIED', merge: true, fileCount: 1, content: 'expected'};
   const body = '```yaml\nschema: reviewable-dependency-updates/v1\n' +
     'lockfiles:\n  yarn.lock:\n    "leaf@npm:^1.0.0": {from: "1.0.0", to: "1.1.0"}\n```';
   const github = {
     graphql: async (_query, args) => {
       calls.push({kind: 'query', args});
-      if (args.expression) return {repository: {object: {text: 'expected', byteSize: 8}}};
       return {repository: {squashMergeAllowed: true, defaultBranchRef: {name: 'master',
         target: {oid: state.base}}, pullRequest: {state: 'OPEN', isDraft: false,
         body: state.body || body, author: {login: 'author'}, baseRefName: 'master',
@@ -22,6 +21,10 @@ function createFixture() {
         files: {nodes: [{path: state.file, changeType: state.changeType}]}}}};
     },
     rest: {
+      repos: {getContent: async args => {
+        calls.push({kind: 'read', args});
+        return {data: state.content};
+      }},
       users: {getAuthenticated: async () => ({data: {login: state.actor}})},
       orgs: {getMembershipForUser: async () => ({data: {state: state.membership}})},
       pulls: {merge: async args => {
@@ -49,11 +52,34 @@ test('replays, merges the verified head, then comments', async () => {
   const context = createFixture();
   await run(context);
   assert.deepEqual(context.calls.filter(call => call.kind !== 'query').map(call => call.kind),
-    ['replay', 'merge', 'comment']);
+    ['read', 'replay', 'merge', 'comment']);
   assert.equal(context.calls.find(call => call.kind === 'merge').args.sha, 'head');
   assert.equal(context.calls.find(call => call.kind === 'replay').input.baseSha, 'base');
   assert.equal(
     context.calls.filter(call => call.kind === 'query' && !call.args.expression).length, 1);
+});
+
+test('reads large raw files at the captured head without GraphQL blob truncation', async () => {
+  const context = createFixture();
+  context.state.content = '# lockfile\r\n'.repeat(100000) + '# final bytes: é\r\n';
+  await run(context);
+  assert.deepEqual(context.calls.find(call => call.kind === 'read').args, {
+    owner: 'Reviewable', repo: 'example', ref: 'head', path: 'yarn.lock',
+    mediaType: {format: 'raw'},
+  });
+  assert.equal(context.calls.find(call => call.kind === 'replay').input.expected.get('yarn.lock'),
+    context.state.content);
+  assert.equal(context.calls.filter(call => call.kind === 'query').length, 1);
+});
+
+test('rejects non-text, empty, binary, and oversized raw responses before replay', async () => {
+  for (const content of [{type: 'dir'}, '', 'binary\0data', 'é'.repeat(6 * 1024 * 1024)]) {
+    const context = createFixture();
+    context.state.content = content;
+    await assert.rejects(run(context), /Missing, binary, or oversized/);
+    assert.equal(
+      context.calls.some(call => call.kind === 'replay' || call.kind === 'merge'), false);
+  }
 });
 
 test('leaves merge policy to GitHub and never comments after a refused merge', async () => {

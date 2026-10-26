@@ -38,12 +38,14 @@ package-manager migrations, and unsupported lockfile formats are outside this pa
 ### Proof by construction
 
 1. Fetch up to 100 changed files and the head/base SHAs in one GraphQL request.
-   Reject larger PRs. Read the declared files at the captured head.
+   Reject larger PRs. Read the declared files at the captured head through REST's raw
+   content endpoint, avoiding GraphQL's truncation of large lockfiles.
 2. Parse exactly one [versioned YAML recipe](auto-safe-merge/recipe.md) in the PR
    description. Download the current default-branch snapshot; never check out or
    run configuration or scripts from the target PR.
 3. Apply only the declared manifest value replacements. Seed exact npm resolutions
-   for the declared Yarn descriptors, retaining all other baseline entries. Reject
+   for the declared Yarn descriptors, retaining other baseline entries except built-in
+   compatibility patches, which Yarn regenerates from their npm sources. Reject
    stale original versions and downgrades. For manifest-only edits, find the owning
    lockfile automatically and require it to remain byte-identical.
 4. Run the selected Corepack Yarn with `--refresh-lockfile --check-resolutions`
@@ -74,7 +76,10 @@ combined result, as with other PR merges.
 Added/removed transitive descriptors and deduplication are supported when replay
 reproduces them. PR metadata cannot supply arbitrary commands, URLs, patches, or
 package metadata. Unchanged non-registry entries can remain in a lockfile; selecting
-a non-registry update in the recipe is unsupported. A new package with no previous
+a non-registry update in the recipe is unsupported. Yarn's built-in compatibility
+patches for TypeScript, resolve, and fsevents are derived from their matching npm
+updates; agents must not list patch selectors in recipes. Direct patched dependencies
+still have to stay semver-compatible. A new package with no previous
 version is accepted only if Yarn derives it from the unchanged manifests or an
 accepted dependency update. Major transitive updates do not relax range validation
 or exact reconstruction. Failure is reported, never converted into a review bypass.
@@ -102,7 +107,8 @@ Yarn replay against a temporary local registry. The registry fixture exercises
 transitive majors, direct workspace dev dependencies, duplicate versions, aliases,
 pre-1.0 updates, additions/removals, platform-optional packages, future releases,
 range violations, checksum tampering, and manifest-only pin updates, including
-workspace pins with shared lockfiles and invalid integrity hashes. Replay is
+workspace pins with shared lockfiles, invalid integrity hashes, and native built-in
+compatibility patches. Large raw file responses retain their full content. Replay is
 exercised with Yarn 4.0.0 as well as newer pins, without normalizing their lock formats.
 The integration test downloads the pinned Yarn through Corepack and needs network
 access for that download. Normal PR CI uses its read-only GitHub token and does not
