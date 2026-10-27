@@ -10,6 +10,17 @@ reusable-workflow triggers. The authoring agent checks that the PR looks mergeab
 and that CI has passed on the current changes before dispatching. The workflow
 leaves branch-policy and required-check enforcement to GitHub's merge API.
 
+The dispatching agent records the exact workflow run ID and monitors that run
+through completion using the Actions API. A new dispatch for the same repository
+cancels earlier pending or running dispatches, even for a different PR. Agents
+should finish one run before dispatching another for that repository. If the run's
+`conclusion` is `cancelled`, report the interruption and possible competing dispatch
+with the run URL; do not automatically redispatch and cancel the other agent's run.
+Always check the PR's actual merge state, including after cancellation: a merge
+request may have succeeded before cancellation prevented the confirmation comment.
+Before retrying, resolve the competing operation and recheck the base, head, proof,
+and CI. Cancellation is observed through the API, not a callback from a canceled job.
+
 All authenticated GitHub operations in this workflow use `REVIEWABLE_GITHUB_TOKEN`.
 It must authenticate as `reviewable-ops`, with repository access, permission to read
 organization membership, and the existing exemption from code-review requirements.
@@ -70,9 +81,9 @@ package-manager migrations, and unsupported lockfile formats are outside this pa
 
 The proof applies to the captured default-branch snapshot. The merge API pins the
 PR head, but does not freeze the base branch between reconstruction and merging.
-Auto-merge runs are serialized per repository so each run captures the base after
-the preceding run finishes. Other workflows and human merges are not covered by
-this concurrency group and may still move the base during reconstruction.
+Competing auto-merge runs are canceled per repository; this is not a merge lock
+or a FIFO queue. Cancellation cannot undo an already-issued merge request. Other
+workflows and human merges can also move the base during reconstruction.
 GitHub rejects conflicts; nonconflicting concurrent changes can still affect the
 combined result, as with other PR merges.
 
