@@ -188,7 +188,13 @@ jobs:
 
           try {
             const json = npm(['view', `${name}@${version}`, '--json']);
-            published = JSON.parse(json);
+            // npm 12 always returns an array; older versions return a single object.
+            const result = JSON.parse(json);
+            const matches = Array.isArray(result) ? result : [result];
+            if (matches.length !== 1 || matches[0]?.name !== name || matches[0]?.version !== version) {
+              throw new Error(`Expected npm view to return exactly one result for ${name}@${version}.`);
+            }
+            published = matches[0];
           } catch (e) {
             const stderr = String(e.stderr || '');
             if (stderr.includes('E404') || stderr.includes('404 Not Found')) {
