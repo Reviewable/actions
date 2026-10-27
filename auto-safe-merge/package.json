@@ -1,0 +1,23 @@
+{
+  "name": "reviewable-auto-safe-merge",
+  "private": true,
+  "version": "1.0.0",
+  "packageManager": "yarn@4.13.0",
+  "description": "Validate lockfile-only dependency PRs before merging as reviewable-ops",
+  "scripts": {
+    "lint": "eslint . --max-warnings 0",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@yarnpkg/parsers": "3.1.0",
+    "semver": "7.8.5",
+    "tar": "7.5.22",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "eslint": "^10.13.0",
+    "globals": "^17.13.0",
+    "reviewable-configs": "git+https://github.com/Reviewable/reviewable-configs.git#master"
+  },
+  "type": "module"
+}
