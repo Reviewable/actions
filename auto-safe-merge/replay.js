@@ -48,8 +48,10 @@ async function runYarn({cwd, pin, scratch, immutable = false,
   const windows = process.platform === 'win32';
   const command = windows ? process.execPath : 'corepack';
   if (windows) {
-    args.unshift(path.join(path.dirname(process.execPath),
-      'node_modules/corepack/dist/corepack.js'));
+    // Corepack sets COREPACK_ROOT when it runs Yarn, including standalone Corepack installs.
+    const corepackRoot = process.env.COREPACK_ROOT ??
+      path.join(path.dirname(process.execPath), 'node_modules/corepack');
+    args.unshift(path.join(corepackRoot, 'dist/corepack.js'));
   }
   const env = createReplayEnvironment(scratch);
   // Corepack caches by version and skips hash checks on a cache hit. Isolate complete pins.

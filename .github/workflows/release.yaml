@@ -5,7 +5,7 @@ on:
     inputs:
       node_version:
         type: string
-        default: "24"
+        default: "26"
       directory:
         type: string
         default: "."
@@ -36,6 +36,9 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ inputs.node_version }}
+
+      - name: Install Corepack
+        run: command -v corepack >/dev/null || npm install --global corepack@0.36.0
 
       - name: Install dependencies
         shell: bash
