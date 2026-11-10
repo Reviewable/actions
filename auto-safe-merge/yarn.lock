@@ -503,7 +503,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@yarnpkg/parsers@npm:3.1.0":
+"@yarnpkg/parsers@npm:^3.1.0":
   version: 3.1.0
   resolution: "@yarnpkg/parsers@npm:3.1.0"
   dependencies:
@@ -2183,13 +2183,13 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "reviewable-auto-safe-merge@workspace:."
   dependencies:
-    "@yarnpkg/parsers": "npm:3.1.0"
+    "@yarnpkg/parsers": "npm:^3.1.0"
     eslint: "npm:^10.13.0"
     globals: "npm:^17.13.0"
     reviewable-configs: "git+https://github.com/Reviewable/reviewable-configs.git#master"
-    semver: "npm:7.8.6"
-    tar: "npm:7.5.22"
-    yaml: "npm:2.9.1"
+    semver: "npm:^7.8.6"
+    tar: "npm:^7.5.22"
+    yaml: "npm:^2.9.1"
   languageName: unknown
   linkType: soft
 
@@ -2244,21 +2244,21 @@ __metadata:
   languageName: node
   linkType: hard
 
-"semver@npm:7.8.6, semver@npm:^7.7.1, semver@npm:^7.7.3":
-  version: 7.8.6
-  resolution: "semver@npm:7.8.6"
-  bin:
-    semver: bin/semver.js
-  checksum: 10c0/bf0a4d16eb067e5391323649e46b4a268644d7f8ee88e37c7668d35e861ec145b6e7df576d898007fc0d9a2cedcbc33f71460aa3bbea18eedfa5af58c064d7fe
-  languageName: node
-  linkType: hard
-
 "semver@npm:^6.3.1":
   version: 6.3.2
   resolution: "semver@npm:6.3.2"
   bin:
     semver: bin/semver.js
   checksum: 10c0/210073b9a7ca6e854ae003d2a735937ac9bce09b34975f28e1dd4c9fce41c1ebfa11aa2babf25ed72c1c79037db39ef7cfba441d05888d558745f47becc14c8f
+  languageName: node
+  linkType: hard
+
+"semver@npm:^7.7.1, semver@npm:^7.7.3, semver@npm:^7.8.6":
+  version: 7.8.6
+  resolution: "semver@npm:7.8.6"
+  bin:
+    semver: bin/semver.js
+  checksum: 10c0/bf0a4d16eb067e5391323649e46b4a268644d7f8ee88e37c7668d35e861ec145b6e7df576d898007fc0d9a2cedcbc33f71460aa3bbea18eedfa5af58c064d7fe
   languageName: node
   linkType: hard
 
@@ -2433,7 +2433,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"tar@npm:7.5.22":
+"tar@npm:^7.5.22":
   version: 7.5.22
   resolution: "tar@npm:7.5.22"
   dependencies:
@@ -2740,7 +2740,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"yaml@npm:2.9.1":
+"yaml@npm:^2.9.1":
   version: 2.9.1
   resolution: "yaml@npm:2.9.1"
   bin:

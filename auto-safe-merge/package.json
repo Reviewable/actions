@@ -9,10 +9,10 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@yarnpkg/parsers": "3.1.0",
-    "semver": "7.8.6",
-    "tar": "7.5.22",
-    "yaml": "2.9.1"
+    "@yarnpkg/parsers": "^3.1.0",
+    "semver": "^7.8.6",
+    "tar": "^7.5.22",
+    "yaml": "^2.9.1"
   },
   "devDependencies": {
     "eslint": "^10.13.0",
