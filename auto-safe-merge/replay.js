@@ -38,6 +38,22 @@ function createReplayEnvironment(scratch) {
     CI: 'true'};
 }
 
+async function findWindowsCorepack() {
+  // npm places the standalone Corepack package under a global prefix on PATH.
+  const prefixes = (process.env.PATH || '').split(path.delimiter)
+    .map(directory => directory.replace(/^"(.*)"$/, '$1'))
+    .filter(directory => path.isAbsolute(directory));
+  const roots = [process.env.COREPACK_ROOT,
+    ...[...prefixes, path.dirname(process.execPath)].map(prefix =>
+      path.join(prefix, 'node_modules/corepack'))];
+  for (const root of roots) {
+    if (!root) continue;
+    const script = path.resolve(root, 'dist/corepack.js');
+    if ((await fs.stat(script).catch(() => null))?.isFile()) return script;
+  }
+  throw new Error('Corepack was not found. Install it with npm and put its global prefix on PATH.');
+}
+
 async function runYarn({cwd, pin, scratch, immutable = false,
   lockfile = path.join(cwd, 'yarn.lock')}) {
   parseYarnVersion(pin);
@@ -47,16 +63,11 @@ async function runYarn({cwd, pin, scratch, immutable = false,
   const before = immutable ? await fs.readFile(lockfile, 'utf8') : null;
   const windows = process.platform === 'win32';
   const command = windows ? process.execPath : 'corepack';
-  if (windows) {
-    // Corepack sets COREPACK_ROOT when it runs Yarn, including standalone Corepack installs.
-    const corepackRoot = process.env.COREPACK_ROOT ??
-      path.join(path.dirname(process.execPath), 'node_modules/corepack');
-    args.unshift(path.join(corepackRoot, 'dist/corepack.js'));
-  }
   const env = createReplayEnvironment(scratch);
   // Corepack caches by version and skips hash checks on a cache hit. Isolate complete pins.
   env.COREPACK_HOME = path.join(env.COREPACK_HOME, createHash('sha256').update(pin).digest('hex'));
   try {
+    if (windows) args.unshift(await findWindowsCorepack());
     const result = await execute(command, args, {cwd, env,
       timeout: 5 * 60 * 1000, maxBuffer: 4 * 1024 * 1024, windowsHide: true});
     insist(!immutable || before === await fs.readFile(lockfile, 'utf8'),
