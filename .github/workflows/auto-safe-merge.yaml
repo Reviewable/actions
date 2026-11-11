@@ -36,7 +36,7 @@ jobs:
 
       - uses: actions/setup-node@v6
         with:
-          node-version: '24'
+          node-version: '26'
           token: ${{ secrets.REVIEWABLE_GITHUB_TOKEN }}
           package-manager-cache: false
 
@@ -45,6 +45,7 @@ jobs:
         env:
           YARN_ENABLE_SCRIPTS: 'false'
         run: |
+          command -v corepack >/dev/null || npm install --global corepack@0.36.0
           corepack enable
           yarn workspaces focus --production
 

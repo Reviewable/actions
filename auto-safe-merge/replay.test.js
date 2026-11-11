@@ -20,6 +20,32 @@ test('replay children receive no GitHub credentials or arbitrary Node options', 
   assert.equal(env.YARN_ENABLE_SCRIPTS, 'false');
 });
 
+test('direct Windows replay finds standalone Corepack on PATH',
+  {skip: process.platform !== 'win32'}, async t => {
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'standalone-corepack-test-'));
+    t.after(() => fs.rm(scratch, {recursive: true, force: true}));
+    const prefix = path.join(scratch, 'npm prefix');
+    const script = path.join(prefix, 'node_modules/corepack/dist/corepack.js');
+    await fs.mkdir(path.dirname(script), {recursive: true});
+    await fs.writeFile(script, 'process.stdout.write(JSON.stringify(process.argv.slice(2)));');
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+      !/^(path|corepack_root)$/i.test(key)));
+    env.PATH = `"${prefix}"`;
+    const replay = new URL('./replay.js', import.meta.url).href;
+    const source = `
+      const {runYarn} = await import(${JSON.stringify(replay)});
+      const cwd = process.cwd();
+      const {stdout} = await runYarn({cwd, scratch: cwd, pin: 'yarn@4.18.1'});
+      process.stdout.write(stdout);
+    `;
+    const {stdout} = await promisify(execFile)(process.execPath,
+      ['--input-type=module', '-e', source], {cwd: scratch, env, windowsHide: true});
+    assert.deepEqual(JSON.parse(stdout), [
+      'yarn@4.18.1', 'install', '--mode=update-lockfile',
+      '--check-resolutions', '--refresh-lockfile'
+    ]);
+  });
+
 test('invalid archive entries reject normally and remove the replay directory', async t => {
   const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'archive-rejection-test-'));
   t.after(() => fs.rm(scratch, {recursive: true, force: true}));
